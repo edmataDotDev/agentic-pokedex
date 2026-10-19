@@ -18,6 +18,9 @@ client = anthropic.Anthropic(
     api_key=settings.anthropic_api_key.get_secret_value()
 )
 
+def run_user_turn(history: MessageHistory) -> None | str:
+    return None
+
 def run_llm_turn(history: MessageHistory) -> None | str:
     response = client.messages.create(
         max_tokens=settings.max_tokens, 
