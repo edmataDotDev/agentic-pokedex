@@ -6,17 +6,41 @@ fundamentals — every piece here was deliberately designed, not scaffolded auto
 
 ## 1. Layers and dependency direction
 
+**Filesystem layout** — `agent/`, `pokemon/`, and `cli/` are siblings, all directly under
+`src/pokedex/`. None is nested inside another:
+
+```
+src/pokedex/
+├── __init__.py        (main)
+├── config.py           Settings
+├── agent/
+│   ├── loop.py          run_llm_turn, run_user_turn
+│   ├── message_history.py   Message, MessageHistory
+│   ├── system_prompt.py     SYSTEM_PROMPT
+│   └── tools.py             TOOLS schema + dispatch (execute_tool)
+├── pokemon/
+│   └── service.py        PokeAPI via pypokeclient
+└── cli/
+    └── service.py         terminal I/O
+```
+
+**Import graph** — a *separate* thing from the folder layout above. An arrow here means
+"imports," not "contains":
+
 ```
 __init__.py (main)
-   └──> agent/loop.py                 the agent: owns the conversation, resolves turns
-          ├──> agent/message_history.py   state: Message, MessageHistory
-          ├──> agent/system_prompt.py     static: SYSTEM_PROMPT
-          ├──> agent/tools.py             static: TOOLS schema + dispatch (execute_tool)
-          │       └──> pokemon/service.py     service: PokeAPI via pypokeclient
-          └──> cli/service.py              service: terminal I/O
+   └─imports─> agent/loop.py
+                  ├─imports─> agent/message_history.py
+                  ├─imports─> agent/system_prompt.py
+                  ├─imports─> agent/tools.py ─imports─> pokemon/service.py
+                  └─imports─> cli/service.py
 
-config.py (Settings)  — cross-cutting, imported wherever config values are needed
+config.py (Settings) — imported by whichever module needs it; not part of this chain
 ```
+
+`agent/tools.py` importing `pokemon/service.py` does **not** mean `pokemon/` lives inside
+`agent/` — they're sibling packages; it only means `tools.py`'s code happens to `import` from
+`pokemon.service`, the same way it would import any other module regardless of folder position.
 
 Dependencies flow **one direction only**: the agent layer (`loop.py`) imports services
 (`pokemon/service.py`, `cli/service.py`); services never import back from the agent layer. This
