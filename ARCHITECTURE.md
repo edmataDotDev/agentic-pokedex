@@ -87,10 +87,11 @@ variables. Key choices:
 fields — `model: str = "claude-sonnet-5"` (unused) and `model_name: str` (required, no
 default, actually used by `agent/loop.py`). Worth consolidating into one.
 
-**Known live bug:** both `.env` and `.env.example` currently have
-`MODEL_NAME=claude-sonnet-5-5` — the extra `-5` is a typo. The correct model ID is
-`claude-sonnet-5`. This will make the next real `run_llm_turn` call fail with a
-model-not-found error until fixed.
+**Note, not a bug:** `.env` and `.env.example` have `MODEL_NAME=claude-sonnet-5-5` — this
+looked like a typo for `claude-sonnet-5` and was flagged as one, but was verified directly
+against the live API (`response.model` echoed back `"claude-sonnet-5-5"` with no error) — it's
+a real, callable model newer than this assistant's cached model knowledge. Intentional choice,
+left as-is; swap to `claude-sonnet-5` only if that was never actually the intent.
 
 ## 4. Conversation state (`agent/message_history.py`)
 
@@ -196,6 +197,13 @@ consumer of that service, same relationship as `execute_tool` → `pokemon_servi
 - **`compare_pokemon`** (or similar second tool) — intentionally left for independent
   design practice, following the same `TOOLS` + `_HANDLERS` + service-function pattern
   as `get_pokemon`.
+- **Sequential, not concurrent, tool execution** — `run_llm_turn`'s `"tool_use"` branch runs
+  a plain `for` loop over `tool_use_blocks`, calling `execute_tool` one at a time. The SDK
+  docs recommend executing parallel tool calls concurrently (they still get returned together
+  in one `tool_result` message, which `run_llm_turn` already does correctly — only the
+  *execution* is sequential, not the response shape). Not a correctness bug, just slower than
+  necessary once a turn ever involves multiple tool calls at once (e.g. a future
+  `compare_pokemon` implemented as two parallel `get_pokemon` calls).
 
 ## 8. Testing status
 
@@ -205,3 +213,14 @@ consumer of that service, same relationship as `execute_tool` → `pokemon_servi
 - `run_llm_turn` was validated end-to-end with a real multi-round tool-calling
   conversation.
 - No automated test suite exists yet.
+
+## 9. Open question: reusing this architecture in future projects
+
+The goal behind this document isn't just documenting *this* project — it's capturing design
+decisions precisely enough to re-implement the same pattern in a future agent project without
+re-deriving it from scratch. Most of what's above (the service pattern, the `str | None` turn
+contract, `Message`/`MessageHistory`, errors-as-data, the dispatch registry) is already
+domain-agnostic in how it's described — Pokémon only shows up in the concrete examples, not in
+the reasoning. Still undecided: keep everything in this one file (Pokémon examples doubling as
+illustration), or extract a second, domain-free `AGENT_PATTERN.md` meant to be dropped into a new
+project as a starting point. Raised, not resolved, in conversation.
