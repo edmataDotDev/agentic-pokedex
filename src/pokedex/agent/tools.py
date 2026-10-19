@@ -21,7 +21,7 @@ TOOLS = [
 ]
 
 _HANDLERS = {
-    "get_pokemon": lambda _: None
+    "get_pokemon": pokemon_service.get_pokemon
 }
 
 
