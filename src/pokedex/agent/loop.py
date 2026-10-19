@@ -16,14 +16,23 @@ from anthropic.types import (
 )
 from pokedex.cli.service import (
     get_user_input,
-    display_message
+    display_message,
+    display_usage,
+    clear_screen
 )
 
 settings = get_settings()
 client = anthropic.Anthropic(
     api_key=settings.anthropic_api_key.get_secret_value(),
-    
+
 )
+
+# USD per 1M tokens for claude-sonnet-5-5 — update these if MODEL_NAME changes model.
+PRICE_PER_MILLION_INPUT_TOKENS = 2.00
+PRICE_PER_MILLION_OUTPUT_TOKENS = 10.00
+
+total_input_tokens = 0
+total_output_tokens = 0
 
 def run_user_turn(history: MessageHistory) -> None | str:
     user_message = get_user_input()
@@ -45,12 +54,16 @@ def run_user_turn(history: MessageHistory) -> None | str:
 
 def run_llm_turn(history: MessageHistory) -> None | str:
     response = client.messages.create(
-        max_tokens=settings.max_tokens, 
+        max_tokens=settings.max_tokens,
         messages=history.to_list(),
         model=settings.model_name,
         system=SYSTEM_PROMPT,
         tools=TOOLS
     )
+
+    global total_input_tokens, total_output_tokens
+    total_input_tokens += response.usage.input_tokens
+    total_output_tokens += response.usage.output_tokens
 
     content: list[ContentBlock]
     last_block = response.content[-1] if response.content else None
@@ -62,9 +75,6 @@ def run_llm_turn(history: MessageHistory) -> None | str:
     history.add(message=Message(role="assistant", content=content))
 
     match response.stop_reason:
-        case "end_turn":
-            texts_blocks = [b for b in response.content if b.type == "text"]
-            return "".join(b.text for b in texts_blocks)
         case "tool_use":
             tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
 
@@ -83,12 +93,17 @@ def run_llm_turn(history: MessageHistory) -> None | str:
                         )
                     ]
                 ))
-    return None
+            return None
+        case _:
+            texts_blocks = [b for b in response.content if b.type == "text"]
+            return "".join(b.text for b in texts_blocks)
 
 def agent_loop() -> MessageHistory:
     history = MessageHistory()
 
     isUserTurn = True
+
+    clear_screen()
 
     while True:
         answer = None
@@ -99,5 +114,10 @@ def agent_loop() -> MessageHistory:
                 answer = run_llm_turn(history=history)
                 if answer != None:
                     display_message(text=answer)
+                    cost = (
+                        total_input_tokens / 1_000_000 * PRICE_PER_MILLION_INPUT_TOKENS
+                        + total_output_tokens / 1_000_000 * PRICE_PER_MILLION_OUTPUT_TOKENS
+                    )
+                    display_usage(total_input_tokens, total_output_tokens, cost)
 
         isUserTurn = not isUserTurn
