@@ -10,8 +10,10 @@ from pokedex.agent.tools import (
     TOOLS
 )
 from anthropic.types import (
+    TextBlockParam,
     ToolResultBlockParam
 )
+from pokedex.cli.service import get_user_input
 
 settings = get_settings()
 client = anthropic.Anthropic(
@@ -19,7 +21,22 @@ client = anthropic.Anthropic(
 )
 
 def run_user_turn(history: MessageHistory) -> None | str:
-    return None
+    user_message = get_user_input()
+
+    if not user_message:
+        return None
+
+    history.add(message=Message(
+        role="user",
+        content=[
+            TextBlockParam(
+                type="text",
+                text=user_message
+            )
+        ]
+    ))
+
+    return user_message
 
 def run_llm_turn(history: MessageHistory) -> None | str:
     response = client.messages.create(
