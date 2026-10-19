@@ -1,4 +1,5 @@
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.prompt import Prompt
 
 console = Console()
@@ -10,4 +11,5 @@ def get_user_input() -> str:
 
 def display_message(text: str, *, speaker: str = "Pokédex") -> None:
     """Print a single message to the terminal, labeled by who said it."""
-    console.print(f"[bold green]{speaker}:[/bold green] {text}")
+    console.print(f"[bold green]{speaker}:[/bold green]")
+    console.print(Markdown(text))
