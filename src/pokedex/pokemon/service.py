@@ -63,6 +63,32 @@ def get_move(name_or_id: str) -> dict:
 
     return result
 
+def get_level_up_moves(name_or_id: str) -> dict:
+    try:
+        pokemon = _client.get_pokemon(name_or_id)
+    except HTTPStatusError as exc:
+        raise PokemonNotFoundError(
+            f"No Pokémon found with identifier '{name_or_id}'."
+        ) from exc
+
+    level_up_moves = []
+    for move in pokemon.moves:
+        levels = [
+            detail.level_learned_at
+            for detail in move.version_group_details
+            if detail.move_learn_method.name == "level-up"
+        ]
+        if levels:
+            level_up_moves.append({"name": move.move.name, "level": min(levels)})
+
+    level_up_moves.sort(key=lambda m: m["level"])
+
+    return {
+        "id": pokemon.id,
+        "name": pokemon.name,
+        "level_up_moves": level_up_moves,
+    }
+
 def get_pokemon(name_or_id: str) -> dict:
     try:
         pokemon = _client.get_pokemon(name_or_id)
