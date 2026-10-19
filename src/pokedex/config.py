@@ -5,6 +5,8 @@ class Settings(BaseSettings):
     anthropic_api_key: SecretStr
     model: str = "claude-sonnet-5"
     max_tool_retry: int
+    model_name: str
+    max_tokens: int
 
     model_config = SettingsConfigDict(
         env_file=".env",

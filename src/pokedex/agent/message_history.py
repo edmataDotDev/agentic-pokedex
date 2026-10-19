@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import Literal
 
 from anthropic.types import (
@@ -6,15 +7,16 @@ from anthropic.types import (
     ToolResultBlockParam,
     ToolUseBlockParam,
 )
+from anthropic.types import ContentBlock as ResponseContentBlock
 
 Role = Literal["user", "assistant", "system"]
-ContentBlock = TextBlockParam | ToolUseBlockParam | ToolResultBlockParam
+ContentBlock = TextBlockParam | ToolUseBlockParam | ToolResultBlockParam | ResponseContentBlock
 
 
 class Message:
-    def __init__(self, role: Role, content: list[ContentBlock]):
+    def __init__(self, role: Role, content: Sequence[ContentBlock]):
         self.role: Role = role
-        self.content: list[ContentBlock] = content
+        self.content: Sequence[ContentBlock] = content
 
 
 class MessageHistory:

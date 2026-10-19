@@ -1,9 +1,9 @@
 import json
-
+from anthropic.types import ToolParam
 from pokedex.pokemon import service as pokemon_service
 from pokedex.pokemon.service import PokemonNotFoundError
 
-TOOLS = [
+TOOLS: list[ToolParam] = [
     {
         "name": "get_pokemon",
         "description": "Retrieves data about a specific Pokémon by name or National Pokédex number.",
