@@ -1,8 +1,11 @@
 from httpx2 import HTTPStatusError
 from pypokeclient import Client
+from pokedex.pokemon.evolution import map_chain_link
 from pokedex.pokemon.exceptions import (
     PokemonNotFoundError,
-    MoveNotFoundError
+    MoveNotFoundError,
+    EvolutionTriggerNotFoundError,
+    TypeNotFoundError
 )
 
 
@@ -87,6 +90,54 @@ def get_level_up_moves(name_or_id: str) -> dict:
         "id": pokemon.id,
         "name": pokemon.name,
         "level_up_moves": level_up_moves,
+    }
+
+def get_evolution_chain(name_or_id: str) -> dict:
+    try:
+        species = _client.get_pokemon_species(name_or_id)
+    except HTTPStatusError as exc:
+        raise PokemonNotFoundError(
+            f"No Pokémon found with identifier '{name_or_id}'."
+        ) from exc
+
+    chain_id = int(species.evolution_chain.url.rstrip("/").rsplit("/", 1)[-1])
+    chain = _client.get_evolution_chain(chain_id)
+
+    return map_chain_link(chain.chain)
+
+def get_evolution_trigger(name_or_id: str) -> dict:
+    try:
+        trigger = _client.get_evolution_trigger(name_or_id)
+    except HTTPStatusError as exc:
+        raise EvolutionTriggerNotFoundError(
+            f"No Evolution Trigger found with identifier '{name_or_id}'."
+        ) from exc
+
+    return {
+        "id": trigger.id,
+        "name": trigger.name,
+        "pokemon_species": [s.name for s in trigger.pokemon_species],
+    }
+
+def get_type(name_or_id: str) -> dict:
+    try:
+        type_ = _client.get_type(name_or_id)
+    except HTTPStatusError as exc:
+        raise TypeNotFoundError(
+            f"No Type found with identifier '{name_or_id}'."
+        ) from exc
+
+    relations = type_.damage_relations
+
+    return {
+        "id": type_.id,
+        "name": type_.name,
+        "double_damage_to": [t.name for t in relations.double_damage_to],
+        "double_damage_from": [t.name for t in relations.double_damage_from],
+        "half_damage_to": [t.name for t in relations.half_damage_to],
+        "half_damage_from": [t.name for t in relations.half_damage_from],
+        "no_damage_to": [t.name for t in relations.no_damage_to],
+        "no_damage_from": [t.name for t in relations.no_damage_from],
     }
 
 def get_pokemon(name_or_id: str) -> dict:

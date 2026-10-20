@@ -3,7 +3,12 @@ import json
 from anthropic.types import ToolParam
 
 from pokedex.pokemon import service as pokemon_service
-from pokedex.pokemon.service import MoveNotFoundError, PokemonNotFoundError
+from pokedex.pokemon.service import (
+    EvolutionTriggerNotFoundError,
+    MoveNotFoundError,
+    PokemonNotFoundError,
+    TypeNotFoundError
+)
 
 TOOLS: list[ToolParam] = [
     {
@@ -53,12 +58,69 @@ TOOLS: list[ToolParam] = [
             "additionalProperties": False
         }
     },
+    {
+        "name": "get_evolution_chain",
+        "description": (
+            "Retrieves the evolution chain for a specific Pokémon by name or "
+            "National Pokédex number — what it evolves into (or from), and under "
+            "what conditions (level, item, trade, happiness, etc)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name_or_id": {
+                    "type": "string"
+                }
+            },
+            "required": ["name_or_id"],
+            "additionalProperties": False
+        }
+    },
+    {
+        "name": "get_evolution_trigger",
+        "description": (
+            "Retrieves data about a specific evolution trigger by name or id "
+            "(e.g. level-up, trade, use-item, shed) — what kind of event it is "
+            "and which Pokémon species use it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name_or_id": {
+                    "type": "string"
+                }
+            },
+            "required": ["name_or_id"],
+            "additionalProperties": False
+        }
+    },
+    {
+        "name": "get_type",
+        "description": (
+            "Retrieves data about a specific Pokémon type by name or id — its "
+            "damage relations (what it's super effective against, weak to, or "
+            "immune to and from)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name_or_id": {
+                    "type": "string"
+                }
+            },
+            "required": ["name_or_id"],
+            "additionalProperties": False
+        }
+    },
 ]
 
 _HANDLERS = {
     "get_pokemon": pokemon_service.get_pokemon,
     "get_move": pokemon_service.get_move,
-    "get_level_up_moves": pokemon_service.get_level_up_moves
+    "get_level_up_moves": pokemon_service.get_level_up_moves,
+    "get_evolution_chain": pokemon_service.get_evolution_chain,
+    "get_evolution_trigger": pokemon_service.get_evolution_trigger,
+    "get_type": pokemon_service.get_type
 }
 
 
@@ -69,7 +131,12 @@ def execute_tool(name: str, tool_input: dict) -> tuple[str, bool]:
 
     try:
         result = handler(**tool_input)
-    except (PokemonNotFoundError, MoveNotFoundError) as exc:
+    except (
+        PokemonNotFoundError,
+        MoveNotFoundError,
+        EvolutionTriggerNotFoundError,
+        TypeNotFoundError
+    ) as exc:
         return str(exc), True
 
     return json.dumps(result), False
