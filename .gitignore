@@ -8,4 +8,11 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Secrets
 .env
+
+# Tool caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
