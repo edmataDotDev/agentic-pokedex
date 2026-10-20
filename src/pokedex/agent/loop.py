@@ -1,3 +1,5 @@
+from concurrent.futures import ThreadPoolExecutor
+
 import anthropic
 from pokedex.config import get_settings
 from pokedex.agent.system_prompt import SYSTEM_PROMPT
@@ -80,19 +82,27 @@ def run_llm_turn(history: MessageHistory) -> None | str:
 
             for tool in tool_use_blocks:
                 display_message(text=tool.name + " in progress...", speaker="System")
-                text, isError = execute_tool(name=tool.name, tool_input=tool.input)
 
-                history.add(message=Message(
-                    role="user",
-                    content=[
-                        ToolResultBlockParam(
-                            tool_use_id=tool.id,
-                            type="tool_result",
-                            content=text,
-                            is_error=isError
-                        )
-                    ]
-                ))
+            with ThreadPoolExecutor(max_workers=len(tool_use_blocks)) as executor:
+                futures = [ 
+                    executor.submit(execute_tool, name=tool.name, tool_input=tool.input) 
+                    for tool in tool_use_blocks 
+                ]
+
+                results = [future.result() for future in futures]
+
+            history.add(message=Message(
+                role="user",
+                content=[
+                    ToolResultBlockParam(
+                        tool_use_id=tool.id,
+                        type="tool_result",
+                        content=text,
+                        is_error=isError
+                    )
+                    for tool, (text, isError) in zip(tool_use_blocks, results)
+                ]
+            ))
             return None
         case _:
             texts_blocks = [b for b in response.content if b.type == "text"]
