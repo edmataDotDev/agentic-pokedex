@@ -20,6 +20,13 @@ def display_message(text: str, *, speaker: str = "Pokédex") -> None:
     console.print(Markdown(text))
 
 
+def display_tool_calls(tool_names: list[str]) -> None:
+    """Print a compact, subtle section listing which tools are about to run."""
+    console.print("[dim]⏺ Running tools[/dim]")
+    for name in tool_names:
+        console.print(f"[dim]  ⎿ {name}[/dim]")
+
+
 def display_usage(input_tokens: int, output_tokens: int, cost: float) -> None:
     """Print a running token/cost tally; meant to be the last thing printed after a reply."""
     total_tokens = input_tokens + output_tokens

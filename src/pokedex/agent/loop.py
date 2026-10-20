@@ -19,6 +19,7 @@ from anthropic.types import (
 from pokedex.cli.service import (
     get_user_input,
     display_message,
+    display_tool_calls,
     display_usage,
     clear_screen
 )
@@ -80,8 +81,7 @@ def run_llm_turn(history: MessageHistory) -> None | str:
         case "tool_use":
             tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
 
-            for tool in tool_use_blocks:
-                display_message(text=tool.name + " in progress...", speaker="System")
+            display_tool_calls([tool.name for tool in tool_use_blocks])
 
             with ThreadPoolExecutor(max_workers=settings.max_concurrent_tools) as executor:
                 futures = [ 
