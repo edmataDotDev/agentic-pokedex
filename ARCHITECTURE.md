@@ -434,3 +434,136 @@ client-side throttle (PRODUCTION_READINESS.md §13, guardrails). Those gaps alre
 but this tool is the first one that makes them actually hurt latency/etiquette noticeably. Worth
 prioritizing the caching item before this tool sees real/repeated use; not blocking for the spec
 itself.
+
+## 11. Generic JSON-compaction layer between services and tools (spec)
+
+Status: **designed, not implemented** — no `agent/compact.py` file exists yet. Scoped from a
+web-research pass (see chat for sources) plus the project's own existing precedent: `get_move`
+and `pokemon/evolution.py::map_evolution_detail` already hand-trim "no-op" fields per call
+(PRODUCTION_READINESS.md §2), but that trimming is bespoke per function, has to be re-derived for
+every new service, and still misses cases *within* those same functions (see §11.4). This spec
+generalizes that one existing technique into a single reusable function, rather than inventing a
+new one, after researching what else is actually effective.
+
+### 11.1 What the research actually supports (and what it doesn't)
+
+Three families of technique showed up:
+
+1. **Drop null/empty fields.** Consistently described as a safe, "lossless" first-pass
+   optimization — a field that is `null`/`""`/`[]`/`{}` carries no information but still costs
+   tokens. The one universal caveat across sources: never treat `false` or `0` as empty — those
+   are real values (a `pp` of `0`, an `is_hidden` of `false`), not absence. This is the technique
+   this spec adopts (§11.3).
+2. **Format substitution** (JSON → YAML, or newer schemes like TOON/TRON). Results are mixed and
+   format-dependent — one benchmark found YAML can cost *more* tokens than JSON on certain
+   shapes (object-heavy, highly nested) despite dropping braces/quotes, while newer formats like
+   TOON claim ~40%+ reduction specifically on uniform tabular data. JSON itself remains described
+   as the reliable default because models parse it most consistently. **Rejected for this repo**:
+   this project's entire data shape is small, irregular, deeply-nested objects (not large uniform
+   tables), which is exactly the shape where format-swap gains are weakest and parsing-reliability
+   risk is least justified by the payoff. Adopting it would also mean a new dependency and a new
+   serialization convention across every tool — a much bigger change than the one-line
+   `json.dumps` → `json.dumps(compact(...))` swap this spec proposes for comparable benefit.
+3. **Semantic/structural compression** (observation masking, LLM-based summarization, aggressive
+   key renaming). Aimed at a different problem — multi-turn agent trajectories where *old* tool
+   outputs pile up in history, or very large tool outputs (logs, file dumps). **Not this
+   project's problem**: every existing/planned tool response here is one self-contained object a
+   few hundred bytes to a few KB large (not a growing trajectory, not a log dump), so the
+   heavyweight techniques in this family solve a problem this codebase doesn't have yet. Key
+   renaming (e.g. `base_stat` → `bs`) was also considered and rejected on its own merits — the
+   token savings on keys this short are marginal, and it directly fights this project's own
+   stated preference for explicit, readable names over premature micro-optimization.
+
+### 11.2 Where it lives and what it does and doesn't touch
+
+New file `agent/compact.py`, one function, no imports from `pokemon/`. It lives in `agent/`
+specifically because its only consumer is `agent/tools.py` — the dispatch bridge that already
+owns the service → model serialization boundary (§5). This is **not** framed as a general
+cross-cutting utility that happens to be placed in `agent/`; its location *is* its scope: the
+one call site inside `execute_tool`, right before the existing `json.dumps(result)` call,
+immediately before a handler's return value is serialized for the model to see:
+
+```python
+return json.dumps(compact(result)), False
+```
+
+**Scope boundary, stated explicitly because it matters for §10:** `compact()` only runs at this
+one call site. Any code that calls a `pokemon_service` function *directly* — `battle.py`,
+`comparison.py`, and `matchup.py` from §10 all do this, never going through `execute_tool` —
+receives the service's raw, uncompacted return value. §10.3 step 2's `power is None` check
+(used to detect and exclude status moves) keeps working exactly as specced, because it never
+sees compacted data in the first place. Compaction is a presentation-layer concern for what the
+*model* sees, not a transformation on the data services hand to other in-process Python code.
+
+### 11.3 The pruning rule
+
+```python
+JSONValue = dict[str, "JSONValue"] | list["JSONValue"] | str | int | float | bool | None
+
+def compact(value: JSONValue) -> JSONValue:
+    """Recursively drop None/""/[]/{} — never a meaningful `False` or `0` — from dicts and
+    lists. The argument's own container type is always preserved: a dict in, a dict out (even
+    an empty one); only values *within* it are ever removed."""
+    if isinstance(value, dict):
+        return {
+            key: compacted
+            for key, raw in value.items()
+            if (compacted := compact(raw)) not in (None, "", [], {})
+        }
+    if isinstance(value, list):
+        return [
+            compacted
+            for raw in value
+            if (compacted := compact(raw)) not in (None, "", [], {})
+        ]
+    return value
+```
+
+(Recursive type aliases of this shape are supported by mypy well before the version pinned in
+`pyproject.toml` — this should type-check as written, not as a hedge.)
+
+Two invariants worth stating outright, since a generic recursive function invites edge cases:
+
+- **The root is never deleted, only shrunk.** `execute_tool` always calls `compact()` with a
+  `dict` (every handler returns one); the function always hands back a `dict` in that case, even
+  `{}` in a pathological case where every field happened to be empty. `json.dumps({})` is valid,
+  so the "tools never raise" contract (§5) holds either way — it would just be an uninformative
+  but not broken result. In practice this doesn't occur today: every existing and §10-planned
+  service always includes at least one stable, never-empty identifying field (`id`, `name`, or a
+  `pokemon_1`/`pokemon_2` wrapper).
+- **`False` and `0` always survive**, by construction of the `not in (None, "", [], {})` check —
+  equality against that tuple is `False` for both, so neither is ever mistaken for "empty."
+
+**Stance on `None`, stated explicitly (per §11.1's one caveat):** this spec treats "key absent"
+and "key present with value `None`" as equivalent to the model — a key that doesn't appear means
+"not applicable to this entry," the same convention `get_move`'s existing conditional fields
+(`effect_chance`, `meta.ailment`, etc.) already establish by omission. `compact()` simply applies
+that same convention uniformly, including to `get_move`'s *unconditional* base fields (`power`,
+`accuracy`) that currently leak a literal `"power": null` to the model today. Recommended
+follow-up (not required for this spec): tool descriptions in `TOOLS` could state this convention
+explicitly for the model's benefit — left as a documentation nit, not a blocker.
+
+### 11.4 Relationship to the existing manual trimming (`get_move`, `pokemon/evolution.py`)
+
+Not redundant, and not touched by this spec. The manual `if`-guards in `get_move` and
+`map_evolution_detail` decide **which keys get built into the dict in the first place** (e.g.
+"only add a `meta` sub-dict key if the category says something") — a decision that requires
+domain knowledge the generic layer deliberately doesn't have (it can't know that
+`required_pokemon_form` repeating the base species name is noise — PRODUCTION_READINESS.md §2's
+open item — because that requires knowing what an eeveelution is). `compact()` operates one step
+later, on **whether an already-built key survives serialization** once it's known to be
+None/empty. The two are complementary, not overlapping: this spec's function catches cases the
+manual trimming doesn't (`get_move`'s unconditional `power`/`accuracy`, and any *future* service
+that is written without hand-trimming at all), while leaving domain-specific decisions where they
+already live.
+
+### 11.5 Verification
+
+No live API calls needed — pure function, no I/O, the first realistic candidate in this codebase
+for an actual `pytest` unit test (zero exist today, per PRODUCTION_READINESS.md §6). Concrete
+before/after check to confirm the feature does what it claims:
+`len(json.dumps(result))` vs. `len(json.dumps(compact(result)))` on two known-verbose real
+responses — `get_move` for a status move with `power: null` (e.g. `"growl"`), and
+`get_evolution_chain` for an eeveelution (many near-empty condition dicts). Character count is a
+cheap proxy for token count, not a substitute for it; the Anthropic SDK's token-counting endpoint
+can confirm actual token deltas later if a precise before/after number is wanted.
