@@ -9,3 +9,6 @@ class EvolutionTriggerNotFoundError(Exception):
 
 class TypeNotFoundError(Exception):
     """Raised when a Type cannot be found by name or id number."""
+
+class PokemonFormNotFoundError(Exception):
+    """Raised when a Pokémon Form cannot be found by name or id number."""

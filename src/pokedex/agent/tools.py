@@ -6,6 +6,7 @@ from pokedex.pokemon import service as pokemon_service
 from pokedex.pokemon.service import (
     EvolutionTriggerNotFoundError,
     MoveNotFoundError,
+    PokemonFormNotFoundError,
     PokemonNotFoundError,
     TypeNotFoundError
 )
@@ -112,6 +113,25 @@ TOOLS: list[ToolParam] = [
             "additionalProperties": False
         }
     },
+    {
+        "name": "get_pokemon_form",
+        "description": (
+            "Retrieves data about a specific Pokémon form by name (e.g. 'arceus-fire', "
+            "'rotom-heat', 'deoxys-attack', 'charizard-mega-x') — its type(s) and what "
+            "triggers it (held item, etc). Use this for alternate/regional/mega forms; "
+            "get_pokemon only covers a Pokémon's base/default form."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name_or_id": {
+                    "type": "string"
+                }
+            },
+            "required": ["name_or_id"],
+            "additionalProperties": False
+        }
+    },
 ]
 
 _HANDLERS = {
@@ -120,7 +140,8 @@ _HANDLERS = {
     "get_level_up_moves": pokemon_service.get_level_up_moves,
     "get_evolution_chain": pokemon_service.get_evolution_chain,
     "get_evolution_trigger": pokemon_service.get_evolution_trigger,
-    "get_type": pokemon_service.get_type
+    "get_type": pokemon_service.get_type,
+    "get_pokemon_form": pokemon_service.get_pokemon_form
 }
 
 
@@ -135,7 +156,8 @@ def execute_tool(name: str, tool_input: dict) -> tuple[str, bool]:
         PokemonNotFoundError,
         MoveNotFoundError,
         EvolutionTriggerNotFoundError,
-        TypeNotFoundError
+        TypeNotFoundError,
+        PokemonFormNotFoundError
     ) as exc:
         return str(exc), True
 

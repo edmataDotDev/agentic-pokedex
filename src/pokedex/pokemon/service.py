@@ -5,7 +5,8 @@ from pokedex.pokemon.exceptions import (
     PokemonNotFoundError,
     MoveNotFoundError,
     EvolutionTriggerNotFoundError,
-    TypeNotFoundError
+    TypeNotFoundError,
+    PokemonFormNotFoundError
 )
 
 
@@ -138,6 +139,30 @@ def get_type(name_or_id: str) -> dict:
         "half_damage_from": [t.name for t in relations.half_damage_from],
         "no_damage_to": [t.name for t in relations.no_damage_to],
         "no_damage_from": [t.name for t in relations.no_damage_from],
+    }
+
+def get_pokemon_form(name_or_id: str) -> dict:
+    try:
+        response = _client._api_request(f"pokemon-form/{name_or_id}")
+    except HTTPStatusError as exc:
+        raise PokemonFormNotFoundError(
+            f"No Pokémon Form found with identifier '{name_or_id}'."
+        ) from exc
+
+    form = response.json()
+
+    return {
+        "name": form["name"],
+        "pokemon": form["pokemon"]["name"],
+        "form_name": form["form_name"],
+        "is_default": form["is_default"],
+        "is_battle_only": form["is_battle_only"],
+        "is_mega": form["is_mega"],
+        "types": [t["type"]["name"] for t in form["types"]],
+        "trigger_conditions": [
+            {"trigger": tc["trigger"], "name": tc["name"]}
+            for tc in form.get("trigger_conditions", [])
+        ],
     }
 
 def get_pokemon(name_or_id: str) -> dict:
