@@ -33,9 +33,13 @@ client = anthropic.Anthropic(
 # USD per 1M tokens for claude-sonnet-5-5 — update these if MODEL_NAME changes model.
 PRICE_PER_MILLION_INPUT_TOKENS = 2.00
 PRICE_PER_MILLION_OUTPUT_TOKENS = 10.00
+PRICE_PER_MILLION_CACHE_WRITE_TOKENS = PRICE_PER_MILLION_INPUT_TOKENS * 1.25
+PRICE_PER_MILLION_CACHE_READ_TOKENS = PRICE_PER_MILLION_INPUT_TOKENS * 0.1
 
 total_input_tokens = 0
 total_output_tokens = 0
+total_cache_write_tokens = 0
+total_cache_read_tokens = 0
 
 def run_user_turn(history: MessageHistory) -> None | str:
     user_message = get_user_input()
@@ -60,13 +64,21 @@ def run_llm_turn(history: MessageHistory) -> None | str:
         max_tokens=settings.max_tokens,
         messages=history.to_list(),
         model=settings.model_name,
-        system=SYSTEM_PROMPT,
+        system=[
+            TextBlockParam(
+                type="text",
+                text=SYSTEM_PROMPT,
+                cache_control={"type": "ephemeral"}
+            )
+        ],
         tools=TOOLS
     )
 
-    global total_input_tokens, total_output_tokens
+    global total_input_tokens, total_output_tokens, total_cache_write_tokens, total_cache_read_tokens
     total_input_tokens += response.usage.input_tokens
     total_output_tokens += response.usage.output_tokens
+    total_cache_write_tokens += response.usage.cache_creation_input_tokens or 0
+    total_cache_read_tokens += response.usage.cache_read_input_tokens or 0
 
     content: list[ContentBlock]
     last_block = response.content[-1] if response.content else None
@@ -132,7 +144,10 @@ def agent_loop() -> MessageHistory:
                     cost = (
                         total_input_tokens / 1_000_000 * PRICE_PER_MILLION_INPUT_TOKENS
                         + total_output_tokens / 1_000_000 * PRICE_PER_MILLION_OUTPUT_TOKENS
+                        + total_cache_write_tokens / 1_000_000 * PRICE_PER_MILLION_CACHE_WRITE_TOKENS
+                        + total_cache_read_tokens / 1_000_000 * PRICE_PER_MILLION_CACHE_READ_TOKENS
                     )
-                    display_usage(total_input_tokens, total_output_tokens, cost)
+                    all_input_tokens = total_input_tokens + total_cache_write_tokens + total_cache_read_tokens
+                    display_usage(all_input_tokens, total_output_tokens, cost)
 
         isUserTurn = not isUserTurn

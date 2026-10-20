@@ -130,7 +130,8 @@ TOOLS: list[ToolParam] = [
             },
             "required": ["name_or_id"],
             "additionalProperties": False
-        }
+        },
+        "cache_control": {"type": "ephemeral"}
     },
 ]
 
