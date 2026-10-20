@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     max_tool_retry: int
     model_name: str
     max_tokens: int
+    max_concurrent_tools: int
 
     model_config = SettingsConfigDict(
         env_file=".env",

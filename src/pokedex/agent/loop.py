@@ -83,7 +83,7 @@ def run_llm_turn(history: MessageHistory) -> None | str:
             for tool in tool_use_blocks:
                 display_message(text=tool.name + " in progress...", speaker="System")
 
-            with ThreadPoolExecutor(max_workers=len(tool_use_blocks)) as executor:
+            with ThreadPoolExecutor(max_workers=settings.max_concurrent_tools) as executor:
                 futures = [ 
                     executor.submit(execute_tool, name=tool.name, tool_input=tool.input) 
                     for tool in tool_use_blocks 
