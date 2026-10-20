@@ -106,7 +106,12 @@ def run_llm_turn(history: MessageHistory) -> None | str:
             return None
         case _:
             texts_blocks = [b for b in response.content if b.type == "text"]
-            return "".join(b.text for b in texts_blocks)
+            text = "".join(b.text for b in texts_blocks)
+
+            if not text:
+                display_message(text=f"stop_reason: {response.stop_reason}", speaker="System")
+
+            return text
 
 def agent_loop() -> MessageHistory:
     history = MessageHistory()
