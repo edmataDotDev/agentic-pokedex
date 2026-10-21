@@ -176,19 +176,25 @@ answer, across a set of real prompts run against the live model.
   tracebacks/implementation details to the user if something breaks — matters less for a personal
   CLI than for anything multi-user, but worth deciding the stance.
 
-## 14. Planned tools (designed, not implemented)
+## 14. Battle win-probability & deterministic compare — both implemented
 
-New feature tools, scoped via discussion but **not yet coded** — the model/service files should
-not reflect these until explicitly built. Full spec (level→stat conversion, move-sampling bound,
-damage formula, return shapes, exact tool schemas, and the shared `pokemon/matchup.py` type-
-effectiveness helper both tools need): see **ARCHITECTURE.md §10**.
+Full spec (level→stat conversion, move-sampling bound, damage formula, return shapes, exact tool
+schemas, and the shared `pokemon/matchup.py` type-effectiveness helper): see **ARCHITECTURE.md
+§10**. Both tools ended up generalized beyond their original fixed-pair/fixed-1v1 scope.
 
-- [ ] **Battle win-probability tool** (`pokemon/battle.py`, not created) — Monte Carlo
-  simulation (~2000 battles) of two Pokémon at independent levels, using each side's best
-  level-appropriate damaging move. Spec: ARCHITECTURE.md §10.3.
+- [x] **Battle win-probability tool** (`pokemon/battle.py`) — Monte Carlo simulation (2000
+  battles) of **team** battles, 1–6 Pokémon per side, `singles` or `doubles` format (generalized
+  beyond the original fixed 1-vs-1 spec), using each active Pokémon's best level-appropriate
+  damaging move, re-scored live every turn. Spec: ARCHITECTURE.md §10.3.
 - [x] **Deterministic compare tool** (`pokemon/comparison.py`) — per-stat diff + totals between
   2–6 Pokémon (generalized beyond the original two-Pokémon spec), plus directional type
   effectiveness for every pair. Spec: ARCHITECTURE.md §10.2.
-- [ ] The battle tool would need a `TOOLS`/`_HANDLERS` entry in `agent/tools.py` once built; per
-  its spec it needs no change to `execute_tool`'s exception tuple. `compare_pokemon` already has
-  its entry and **did** need one addition to that tuple (`InvalidComparisonInputError`).
+- [x] Both have `TOOLS`/`_HANDLERS` entries in `agent/tools.py`. Both **did** need an addition to
+  `execute_tool`'s exception tuple, contrary to each one's original spec: `compare_pokemon` added
+  `InvalidComparisonInputError`, `battle_win_probability` added `InvalidBattleInputError`.
+- [x] Building the battle tool's type-effectiveness chart surfaced and fixed a live, pre-existing
+  bug in `pokemon_service.get_type`: the typed `pypokeclient` client crashes on the Fairy type
+  (`move_damage_class` is `null` in the real API response, which its model doesn't allow),
+  silently breaking `compare_pokemon`/`matchup.py` for any Fairy-type Pokémon. Fixed by switching
+  to the same raw-JSON `_api_request` pattern `get_move`/`get_pokemon_form` already use. See
+  ARCHITECTURE.md §10.4.

@@ -15,3 +15,6 @@ class PokemonFormNotFoundError(Exception):
 
 class InvalidComparisonInputError(Exception):
     """Raised when compare_pokemon receives a malformed or out-of-range list of identifiers."""
+
+class InvalidBattleInputError(Exception):
+    """Raised when battle_win_probability receives a malformed team or format argument."""

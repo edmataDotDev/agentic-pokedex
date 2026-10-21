@@ -121,24 +121,28 @@ def get_evolution_trigger(name_or_id: str) -> dict:
     }
 
 def get_type(name_or_id: str) -> dict:
+    # Uses the raw endpoint, not the typed `_client.get_type`, because pypokeclient's `Type`
+    # model requires `move_damage_class` to be a resource, but the live API returns `null`
+    # there for the Fairy type — same workaround already used by get_move/get_pokemon_form.
     try:
-        type_ = _client.get_type(name_or_id)
+        response = _client._api_request(f"type/{name_or_id}")
     except HTTPStatusError as exc:
         raise TypeNotFoundError(
             f"No Type found with identifier '{name_or_id}'."
         ) from exc
 
-    relations = type_.damage_relations
+    type_ = response.json()
+    relations = type_["damage_relations"]
 
     return {
-        "id": type_.id,
-        "name": type_.name,
-        "double_damage_to": [t.name for t in relations.double_damage_to],
-        "double_damage_from": [t.name for t in relations.double_damage_from],
-        "half_damage_to": [t.name for t in relations.half_damage_to],
-        "half_damage_from": [t.name for t in relations.half_damage_from],
-        "no_damage_to": [t.name for t in relations.no_damage_to],
-        "no_damage_from": [t.name for t in relations.no_damage_from],
+        "id": type_["id"],
+        "name": type_["name"],
+        "double_damage_to": [t["name"] for t in relations["double_damage_to"]],
+        "double_damage_from": [t["name"] for t in relations["double_damage_from"]],
+        "half_damage_to": [t["name"] for t in relations["half_damage_to"]],
+        "half_damage_from": [t["name"] for t in relations["half_damage_from"]],
+        "no_damage_to": [t["name"] for t in relations["no_damage_to"]],
+        "no_damage_from": [t["name"] for t in relations["no_damage_from"]],
     }
 
 def get_pokemon_form(name_or_id: str) -> dict:

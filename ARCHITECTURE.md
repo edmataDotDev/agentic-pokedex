@@ -222,14 +222,16 @@ the reasoning. Still undecided: keep everything in this one file (Pokémon examp
 illustration), or extract a second, domain-free `AGENT_PATTERN.md` meant to be dropped into a new
 project as a starting point. Raised, not resolved, in conversation.
 
-## 10. Planned tools — battle win-probability & deterministic compare
+## 10. Battle win-probability & deterministic compare
 
 Specs two tools named informally in PRODUCTION_READINESS.md §14. Both follow the existing
-`TOOLS` + `_HANDLERS` + service-function pattern (§5). Status: `compare_pokemon` is **implemented**
-(§10.2, generalized to N≥2 Pokémon rather than the originally-specced fixed pair — see below);
-`battle_win_probability` (§10.3) remains **designed, not implemented**. Only the battle tool's
-claim of "no new exception class or change to `execute_tool`'s `except` tuple" still holds —
-`compare_pokemon` needed one (`InvalidComparisonInputError`), explained in §10.2.
+`TOOLS` + `_HANDLERS` + service-function pattern (§5). Both are now **implemented**, and both
+ended up generalized beyond their original fixed-pair spec: `compare_pokemon` (§10.2) compares
+N≥2 Pokémon, not exactly two; `battle_win_probability` (§10.3) simulates team battles (1–6
+Pokémon per side, singles or doubles), not a fixed 1-vs-1. Neither original claim of "no new
+exception class needed" survived contact with the real generalization — `compare_pokemon` needed
+`InvalidComparisonInputError`, `battle_win_probability` needed `InvalidBattleInputError` — both
+explained in their respective sections below.
 
 ### 10.1 Shared helper: `pokemon/matchup.py` (new file)
 
@@ -343,133 +345,186 @@ calls in the worst case (one ordered pair at a time, no memoization) — same ca
 inefficiency as §10.4's note on the battle tool, and PRODUCTION_READINESS.md §10 already documents
 "no caching layer" as an open gap project-wide.
 
-### 10.3 `battle_win_probability` — Monte Carlo battle tool
+### 10.3 `battle_win_probability` — Monte Carlo team-battle tool (implemented, generalized to teams/doubles)
 
-New file `pokemon/battle.py`. Module-level constants (not `Settings` fields — adding a required
-`Settings` field with no default would break any existing `.env`; these are simulation
-parameters, not deployment config): `SIMULATIONS = 2000`, `MAX_TURNS = 100`.
+Implemented in `pokemon/battle.py`. **Deviates from the original spec**, which was a fixed
+1-vs-1: the real tool accepts two teams of 1–6 Pokémon each and an optional `format`
+(`"singles"` — one active Pokémon per side, the default — or `"doubles"` — two active per side,
+with spread moves able to hit both active opponents at once). A team of size 1 in `"singles"`
+format is exactly the originally-specced 1-vs-1 battle. Module-level constants (not `Settings`
+fields — these are simulation parameters, not deployment config): `SIMULATIONS = 2000`,
+`MAX_TURNS = 100`, `MIN_TEAM_SIZE = 1`, `MAX_TEAM_SIZE = 6`, `SPREAD_MODIFIER = 0.75`.
 
 ```python
 def battle_win_probability(
-    name_or_id_1: str, level_1: int,
-    name_or_id_2: str, level_2: int,
+    team_1: Sequence[dict],   # [{"name_or_id": str, "level": int}, ...], 1-6 entries
+    team_2: Sequence[dict],
+    format: str = "singles",  # "singles" | "doubles"
     seed: int | None = None,
 ) -> dict:
 ```
 
-(`seed` is **not** exposed in the tool's `input_schema` — Claude never sets it; it exists purely
-so the function is unit-testable deterministically later, since zero tests exist today.)
+(`seed` is **not** exposed in the tool's `input_schema` — the model never sets it; it exists
+purely so the function is unit-testable deterministically later, since zero tests exist today.)
 
-**1. Level → stat conversion (resolves PRODUCTION_READINESS.md's unstated "baseline stats only"
-note — without this step, `level` would barely affect anything):**
-With IV=0, EV=0, neutral nature (the stated baseline simplification):
-- `hp = floor(2 * base_hp * L / 100) + L + 10`
-- every other stat = `floor(2 * base_stat * L / 100) + 5`
+**0. Input validation — raises `InvalidBattleInputError`, not a bare `ValueError`** (same reason
+as `InvalidComparisonInputError` in §10.2: `pydantic.ValidationError`/`json.JSONDecodeError` are
+themselves `ValueError` subclasses, so catching `ValueError` would silently swallow those too).
+This validation is **required**, not optional, because JSON-Schema `minItems`/`maxItems`/`enum`/
+nested-object constraints are advisory only (§10.2 already established this for scalar bounds;
+it applies identically to array/object shape) — a malformed `team_1` entry (missing `"level"`,
+a string where an object was expected, a `bool` passed for `level`, since `bool` is a Python `int`
+subclass) would otherwise raise a raw `TypeError`/`KeyError` from inside the handler and crash
+the agent loop, since `execute_tool` only catches a fixed exception tuple. Validates: each team is
+a list of `MIN_TEAM_SIZE`–`MAX_TEAM_SIZE` dicts, each with a non-empty string `name_or_id` and an
+`int` (not `bool`) `level`; `format` is exactly `"singles"` or `"doubles"`.
 
-Level is clamped to `[1, 100]` **inside the service function**, not rejected — nothing in this
-codebase enforces JSON Schema bounds server-side, so the schema's `minimum`/`maximum` are
-advisory only; the service must defend itself regardless. The clamped value actually used is
-echoed back in the result (`"level"` in the output, see return shape) so the model/user can see
-if clamping happened. This keeps the "tools never raise" contract intact without adding a new
-exception for "invalid level."
+**1. Roster setup, once per call (not per simulation), per team member:**
+- `get_pokemon` + level clamped to `[1,100]` (echoed back per member, same reasoning as the
+  original spec: schema bounds are advisory only) + the same stat-conversion formula as before
+  (`hp = floor(2*base*L/100)+L+10`, every other stat `floor(2*base*L/100)+5`, IV=0/EV=0/neutral
+  nature baseline, unchanged).
+- `get_level_up_moves` filtered to `level <= L`, highest-level 6, `get_move` each, drop
+  `damage_class=="status"` or `power is None` — same candidate-selection logic as the original
+  spec, but **kept as a list, not collapsed to one fixed move** (see next point).
+- **Key behavioral change from the 1-vs-1 spec**: no fixed move is pre-selected once per battle.
+  Opponents change over a team battle (a new teammate enters when one faints; doubles has two
+  simultaneous opponents to pick between), so each active Pokémon re-scores its own candidate
+  moves fresh every turn against whichever opponents are currently active (step 3 below).
+- **Per-member zero-damaging-moves fallback**: an individual member with zero real damaging moves
+  gets its own Struggle-equivalent fallback (`power:50, accuracy:100, type:normal, physical,
+  target:"selected-pokemon"`) — same fallback value as before, now applied per member rather than
+  per side. Only if **every** member on **both** teams needed this fallback does the tool skip
+  simulation entirely for a deterministic draw (`simulations_run:0, draw_rate:1.0,
+  average_turns_to_decide:null`), generalizing the original both-sides-zero rule.
 
-**2. Candidate move selection (resolves the §14 claim that filtering to known-by-level moves
-avoids fetching "dozens" of moves — it doesn't, by itself: `get_level_up_moves` returns names
-only, and a level-50 Pokémon can easily know 20–40 level-up moves):**
-- Call `pokemon_service.get_level_up_moves(name_or_id)`, filter to `level <= L`.
-- Take the **highest-level N=6** of those (moves learned closer to the current level skew
-  stronger; 6 approximates a real moveset with some margin for status-move filtering). If fewer
-  than 6 qualify, use all of them.
-- Call `pokemon_service.get_move(name)` for each of the ≤6 survivors (≤12 total `get_move` calls
-  per battle, plus 2 `get_pokemon` + 2 `get_level_up_moves` — ~16 PokeAPI round-trips worst case;
-  see "Known limitation" below).
-- Drop any move where `damage_class == "status"` or `power is None` (can't be scored by the
-  power/accuracy/effectiveness heuristic; `get_move` already returns `None` correctly for these
-  per its documented nullable-field fix).
-- **If a side ends up with zero damaging moves** (e.g. very low level, or a movepool that's
-  genuinely all status moves within the filtered window), that side's "selected move" becomes a
-  fixed fallback: `{power: 50, accuracy: 100, type: "normal", damage_class: "physical"}` — a
-  Struggle-equivalent, chosen for determinism rather than crashing or returning an error.
-  **If both sides end up with zero real damaging moves**, skip simulation entirely and return a
-  deterministic draw (`simulations_run: 0`, `draw_rate: 1.0`, `average_turns_to_decide: null`) —
-  this is a detectable deterministic case, not something that needs 2000 Monte Carlo runs to
-  discover, and must be reported distinctly from "hit the turn cap."
+**2. Type-effectiveness chart — a real performance fix, not present in the original spec.**
+Calling `matchup.py`'s `get_type`-backed functions inside the simulation loop (2000 runs × up to
+100 turns × up to 4 active attackers × up to 6 candidate moves × up to 2 targets, every turn)
+would be tens of millions of HTTP calls. Instead, `battle.py` builds its own in-memory
+`type_chart: dict[str, dict[str, float]]` **once per call** — one `get_type` per canonical type
+(18 total; the type list hasn't changed since Generation VI and is a fixed domain constant, not
+fetched), then every scoring/damage calculation inside the simulation loop is a pure dict lookup,
+never an HTTP call. This chart is local to `battle.py`, independent of (and not a change to)
+`matchup.py`, which `compare_pokemon` still uses as-is (its own cost is bounded and
+accepted, §10.2).
 
-**3. Move scoring (per PRODUCTION_READINESS.md's existing design, confirmed, unchanged):**
-`score = power * (accuracy / 100) * matchup.best_type_matchup([move_type], opponent_types)`.
-Highest-scoring candidate becomes that side's single fixed move for every simulated battle (the
-opponent's types don't change mid-battle, so re-scoring per turn would be wasted work).
+**3. Per-simulated-battle loop** (`SIMULATIONS=2000` runs, HP reset each run):
+- Active slots per side = `min(2 if doubles else 1, count of non-fainted members)`, filled by
+  team-list order; this single rule implements both "which Pokémon are out" and "forced-switch
+  replacement on faint" with no separate switch-tracking state, because it's recomputed fresh
+  from each member's `fainted` flag at the start of every turn.
+- Each turn: every active, non-fainted combatant picks one (move, target) pair once, from its
+  current candidates, scored as `power * (accuracy/100) * stab * effectiveness` (`stab=1.5` if
+  the move's type is one of the attacker's own types). For a single-target move, `effectiveness`
+  is computed against the better-scoring of the currently-active opponents, tie-broken by lower
+  current HP then lower team-list index (approximates focusing fire to secure a KO, and keeps the
+  choice reproducible under a given `seed`). For a spread move (PokeAPI's move `target` of
+  `"all-opponents"`/`"all-other-pokemon"`/`"entire-field"`, only when ≥2 opponents are actually
+  active) `effectiveness = SPREAD_MODIFIER * sum(effectiveness against each active opponent)` — an
+  expected-total-damage proxy, not a plain average (averaging would systematically undervalue
+  spread moves whenever both opponents are merely neutral to it).
+- All chosen actions across **both** sides (up to 4 in doubles) resolve in one combined order,
+  sorted by `(-speed, a fresh random draw taken once per combatant per turn)` — not a single
+  coin-flip, since doubles can produce 3- or 4-way speed ties, not just the original spec's 2-way
+  tie. An action is skipped if its user fainted earlier the same turn; if its originally-chosen
+  single target fainted earlier the same turn, it retargets the other live active opponent if one
+  exists, else fizzles; a spread action simply drops any already-fainted original target from its
+  hit list. Each target actually hit takes damage via the unchanged original formula (own
+  accuracy roll, own `[0.85,1.0]` damage roll, `ATK`/`DEF` pair by `damage_class`), with spread
+  hits additionally multiplied by `SPREAD_MODIFIER`. KOs are checked after each resolved action,
+  not only at turn end.
+- End-of-turn backfill (next non-fainted teammate takes an empty active slot) is **correctly
+  modeled** end-of-turn-only behavior matching real doubles rules, not a simplification to
+  apologize for.
+- Battle ends when one side has zero non-fainted members (other side wins), both reach zero the
+  same turn (draw), or `MAX_TURNS` is reached with survivors on both sides (draw) — the latter
+  distinct from the all-fallback deterministic draw in step 1.
 
-**4. Damage formula (standard simplified formula, no IV/EV/nature — same simplification level as
-the stat conversion above):**
-```
-damage = floor( ( (2*L/5 + 2) * power * (ATK/DEF) / 50 ) + 2 ) * STAB * effectiveness * roll
-```
-- `ATK/DEF` = `Attack`/`Defense` if `damage_class == "physical"`, else `Special Attack`/
-  `Special Defense` if `"special"` (PokeAPI only has these two damaging categories).
-- `STAB = 1.5` if the move's type is one of the attacker's own types, else `1.0`.
-- `effectiveness` = the same `best_type_matchup` value used for scoring (recomputed or cached;
-  same inputs, same result).
-- `roll` = uniform random in `[0.85, 1.0]`, resampled every hit.
-- Before computing damage, roll uniform `[0, 1)` against `accuracy/100`; on miss, `damage = 0`
-  for that attack this turn (no retry).
+**4. Aggregation**: unchanged in kind from the original spec — `SIMULATIONS` independent runs,
+`random.Random(seed)` if seeded else default `random`, tallying `team_1_win_rate`/
+`team_2_win_rate`/`draw_rate` and `average_turns_to_decide` over decided (non-draw) battles only.
 
-**5. Turn order & loop:** higher `Speed` acts first each turn; exact ties resolved by a fresh
-coin-flip **every turn** (not fixed once per battle — matches real game behavior, per the
-existing design note). Each turn: faster side attacks, loser checked for KO; if still alive,
-other side attacks, checked for KO; turn count increments. Loop ends on a KO or at `MAX_TURNS`
-(100) — reaching the cap with both sides alive counts as a draw **for that one simulated
-battle**, distinct from the "no damaging moves at all" deterministic draw in step 2.
+**Explicit, stated simplifications** (a best-effort approximation built from the same greedy
+type-effectiveness heuristic as the original 1-vs-1 spec, not a competitive-grade engine): no
+abilities, held items, weather, terrain, or entry hazards; no PP tracking; no ally damage modeled
+(a move that in the real games would also hit an ally is treated here as hitting opposing actives
+only); no protect/redirection moves (Follow Me, Rage Powder); no priority-move ordering beyond
+base Speed; no voluntary switching.
 
-**6. Aggregation:** run `SIMULATIONS` (2000) independent battles (HP reset each run), using
-`random.Random(seed)` if a seed was passed, else the module's default `random`. Tally win counts
-per side, draw count, and the turn count of every *decided* (non-draw) battle for an average.
-
-**Return shape** (no per-turn log — same token-cost discipline as `get_move`'s trimming):
+**Return shape:**
 ```json
 {
-  "pokemon_1": {"id": .., "name": .., "level": 50, "selected_move": {"name": "flamethrower", "power": 90, "accuracy": 100, "type": "fire"}},
-  "pokemon_2": {"id": .., "name": .., "level": 50, "selected_move": {...}},
+  "format": "doubles",
+  "team_1": [{"id": .., "name": .., "level": 50, "candidate_moves": [{"name": "flamethrower", "power": 90, "type": "fire"}, ...]}, ...],
+  "team_2": [...],
   "simulations_run": 2000,
-  "pokemon_1_win_rate": 0.63,
-  "pokemon_2_win_rate": 0.35,
+  "team_1_win_rate": 0.63,
+  "team_2_win_rate": 0.35,
   "draw_rate": 0.02,
   "average_turns_to_decide": 4.8
 }
 ```
+(`candidate_moves` lists every move a member might use, re-scored live each turn — unlike the
+original spec's single fixed `selected_move`, there is no one move to report per member anymore.)
 
 **Exceptions:** `PokemonNotFoundError` (from `get_pokemon`/`get_level_up_moves`), `MoveNotFoundError`
-(from `get_move`), `TypeNotFoundError` (from `matchup`, via `get_type`) — **all three already in
-`execute_tool`'s `except` tuple today. No change needed to `agent/tools.py`'s exception
-handling** for this tool either.
+(from `get_move`), `TypeNotFoundError` (from the type-chart build, via `get_type`) — all three
+already in `execute_tool`'s `except` tuple — plus the new `InvalidBattleInputError` from step 0,
+which **does** require a change to `agent/tools.py`'s exception handling (the original spec's "no
+change needed" claim did not survive the team/doubles generalization, same as §10.2).
 
-**Tool schema:**
+**Tool schema** (first nested array-of-objects schema in this codebase — validates cleanly
+against both the Anthropic `ToolParam`/JSON-Schema shape and mypy):
 ```json
 {
   "name": "battle_win_probability",
-  "description": "Estimates the win probability between two Pokémon at independently given levels, via Monte Carlo simulation (2000 simulated battles) using each side's best level-appropriate damaging move. Reports win rate per side, draw rate, and average turns to decide — a measured rate, not a formula-based guess.",
   "input_schema": {
     "type": "object",
     "properties": {
-      "name_or_id_1": {"type": "string"},
-      "level_1": {"type": "integer", "minimum": 1, "maximum": 100},
-      "name_or_id_2": {"type": "string"},
-      "level_2": {"type": "integer", "minimum": 1, "maximum": 100}
+      "team_1": {"type": "array", "items": {"type": "object",
+          "properties": {"name_or_id": {"type": "string"},
+                          "level": {"type": "integer", "minimum": 1, "maximum": 100}},
+          "required": ["name_or_id", "level"], "additionalProperties": false},
+        "minItems": 1, "maxItems": 6},
+      "team_2": "... same shape as team_1 ...",
+      "format": {"type": "string", "enum": ["singles", "doubles"]}
     },
-    "required": ["name_or_id_1", "level_1", "name_or_id_2", "level_2"],
+    "required": ["team_1", "team_2"],
     "additionalProperties": false
-  }
+  },
+  "cache_control": {"type": "ephemeral"}
 }
 ```
+(Full description text lives in `agent/tools.py`, not duplicated here.) `format` is optional in
+the schema; the Python default is `"singles"`, and the tool description tells the model to omit
+it for a standard 1-vs-1 battle.
 
 ### 10.4 Known limitation, not solved by this spec
 
-`battle_win_probability` costs up to ~16 PokeAPI round-trips per call (vs. 1 for every existing
-tool) with no caching (PRODUCTION_READINESS.md §10, "Caching & PokeAPI etiquette") and no
-client-side throttle (PRODUCTION_READINESS.md §13, guardrails). Those gaps already exist today
-but this tool is the first one that makes them actually hurt latency/etiquette noticeably. Worth
-prioritizing the caching item before this tool sees real/repeated use; not blocking for the spec
-itself.
+A 6v6 doubles battle needs up to ~96 PokeAPI calls for roster setup (2 teams × 6 members × up to
+8 calls each: `get_pokemon` + `get_level_up_moves` + ≤6 `get_move`) plus 18 one-time type-chart
+calls ≈ **~114 calls total**, all done once at setup, not per Monte Carlo run (the 2000 simulated
+battles themselves make zero additional HTTP calls, per §10.3 step 2's fix). `get_pokemon` and
+`get_level_up_moves` each independently fetch the same underlying Pokémon resource today — a
+small, accepted duplicate-fetch inefficiency, not fixed here since doing so would mean touching
+already-shipped `service.py` functions. No caching layer exists project-wide
+(PRODUCTION_READINESS.md §10, "Caching & PokeAPI etiquette") and no client-side throttle exists
+(PRODUCTION_READINESS.md §13, guardrails) — this tool is the clearest case yet for why those gaps
+matter; worth prioritizing before it sees real/repeated use.
+
+**A real, separate bug this tool's development surfaced and fixed**: `pokemon_service.get_type`
+previously called `pypokeclient`'s typed `_client.get_type(...)`, whose `Type` pydantic model
+requires `move_damage_class` to be a resource — but the live PokeAPI returns `null` there for the
+Fairy type, so **any** call to `get_type("fairy")` raised an uncaught `pydantic.ValidationError`
+(not an `HTTPStatusError`, so `get_type`'s own `try/except` never saw it). This was already a
+live bug in shipped code: `compare_pokemon`/`matchup.py` would crash on *any* Fairy-type Pokémon
+(e.g. `compare_pokemon(["sylveon", "pikachu"])`), discovered only because `battle.py`'s
+type-chart build is the first code path to unconditionally call `get_type` on every canonical
+type, Fairy included. Fixed by switching `get_type` to the raw-JSON `_api_request` pattern
+`get_move`/`get_pokemon_form` already use for the same class of problem (nullable fields the typed
+client doesn't tolerate), instead of `_client.get_type`. Confirmed fixed live:
+`compare_pokemon(["sylveon", "pikachu"])` now succeeds.
 
 ## 11. Generic JSON-compaction layer between services and tools (spec)
 
