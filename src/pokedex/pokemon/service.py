@@ -6,7 +6,10 @@ from pokedex.pokemon.exceptions import (
     MoveNotFoundError,
     EvolutionTriggerNotFoundError,
     TypeNotFoundError,
-    PokemonFormNotFoundError
+    PokemonFormNotFoundError,
+    VersionNotFoundError,
+    LocationNotFoundError,
+    ItemNotFoundError
 )
 
 
@@ -194,3 +197,177 @@ def get_pokemon(name_or_id: str) -> dict:
             for s in pokemon.stats
         ],
     }
+
+def get_version(name_or_id: str) -> dict:
+    try:
+        response = _client._api_request(f"version/{name_or_id}")
+    except HTTPStatusError as exc:
+        raise VersionNotFoundError(
+            f"No Version found with identifier '{name_or_id}'."
+        ) from exc
+
+    version = response.json()
+
+    return {
+        "id": version["id"],
+        "name": version["name"],
+        "version_group": version["version_group"]["name"],
+    }
+
+def get_version_group(name_or_id: str) -> dict:
+    try:
+        response = _client._api_request(f"version-group/{name_or_id}")
+    except HTTPStatusError as exc:
+        raise VersionNotFoundError(
+            f"No Version Group found with identifier '{name_or_id}'."
+        ) from exc
+
+    version_group = response.json()
+
+    return {
+        "id": version_group["id"],
+        "name": version_group["name"],
+        "generation": version_group["generation"]["name"],
+        "versions": [v["name"] for v in version_group["versions"]],
+        "regions": [r["name"] for r in version_group["regions"]],
+    }
+
+def get_generation(name_or_id: str) -> dict:
+    try:
+        response = _client._api_request(f"generation/{name_or_id}")
+    except HTTPStatusError as exc:
+        raise VersionNotFoundError(
+            f"No Generation found with identifier '{name_or_id}'."
+        ) from exc
+
+    generation = response.json()
+
+    return {
+        "id": generation["id"],
+        "name": generation["name"],
+        "main_region": generation["main_region"]["name"],
+    }
+
+def get_location(name_or_id: str) -> dict:
+    try:
+        response = _client._api_request(f"location/{name_or_id}")
+    except HTTPStatusError as exc:
+        raise LocationNotFoundError(
+            f"No Location found with identifier '{name_or_id}'."
+        ) from exc
+
+    location = response.json()
+
+    return {
+        "id": location["id"],
+        "name": location["name"],
+        "region": location["region"]["name"] if location["region"] else None,
+        "areas": [a["name"] for a in location["areas"]],
+    }
+
+def _map_encounter(encounter: dict) -> dict:
+    return {
+        "min_level": encounter["min_level"],
+        "max_level": encounter["max_level"],
+        "chance": encounter["chance"],
+        "method": encounter["method"]["name"],
+        "condition_values": [c["name"] for c in encounter["condition_values"]],
+    }
+
+def _map_version_details(version_details: list[dict]) -> list[dict]:
+    return [
+        {
+            "version": detail["version"]["name"],
+            "encounters": [_map_encounter(e) for e in detail["encounter_details"]],
+        }
+        for detail in version_details
+    ]
+
+def get_location_area(name_or_id: str) -> dict:
+    try:
+        response = _client._api_request(f"location-area/{name_or_id}")
+    except HTTPStatusError as exc:
+        raise LocationNotFoundError(
+            f"No Location Area found with identifier '{name_or_id}'."
+        ) from exc
+
+    location_area = response.json()
+
+    return {
+        "id": location_area["id"],
+        "name": location_area["name"],
+        "location": location_area["location"]["name"],
+        "pokemon_encounters": [
+            {
+                "pokemon": pe["pokemon"]["name"],
+                "versions": _map_version_details(pe["version_details"]),
+            }
+            for pe in location_area["pokemon_encounters"]
+        ],
+    }
+
+def get_pokemon_location_area(name_or_id: str) -> list[dict]:
+    try:
+        response = _client._api_request(f"pokemon/{name_or_id}/encounters")
+    except HTTPStatusError as exc:
+        raise PokemonNotFoundError(
+            f"No Pokémon found with identifier '{name_or_id}'."
+        ) from exc
+
+    encounters = response.json()
+
+    return [
+        {
+            "location_area": entry["location_area"]["name"],
+            "versions": _map_version_details(entry["version_details"]),
+        }
+        for entry in encounters
+    ]
+
+def get_item(name_or_id: str) -> dict:
+    try:
+        response = _client._api_request(f"item/{name_or_id}")
+    except HTTPStatusError as exc:
+        raise ItemNotFoundError(
+            f"No Item found with identifier '{name_or_id}'."
+        ) from exc
+
+    item = response.json()
+
+    result = {
+        "id": item["id"],
+        "name": item["name"],
+        "category": item["category"]["name"],
+        "attributes": [a["name"] for a in item["attributes"]],
+        "effect": next(
+            (e["short_effect"] for e in item["effect_entries"] if e["language"]["name"] == "en"),
+            None,
+        ),
+        "held_by_pokemon": [
+            {
+                "pokemon": h["pokemon"]["name"],
+                "rarity_by_version": [
+                    {"version": vd["version"]["name"], "rarity_percent": vd["rarity"]}
+                    for vd in h["version_details"]
+                ],
+            }
+            for h in item["held_by_pokemon"]
+        ],
+        "prices": [
+            {
+                "version_group": p["version_group"]["name"],
+                "purchase_price": p["purchase_price"],
+                "sell_price": p["sell_price"],
+            }
+            for p in item["prices"]
+        ],
+        "machines": [m["version_group"]["name"] for m in item["machines"]],
+    }
+
+    if item["fling_power"] is not None:
+        result["fling"] = {
+            "power": item["fling_power"],
+            "effect": item["fling_effect"]["name"] if item["fling_effect"] else None,
+        }
+
+    return result

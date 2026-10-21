@@ -658,3 +658,114 @@ responses — `get_move` for a status move with `power: null` (e.g. `"growl"`), 
 `get_evolution_chain` for an eeveelution (many near-empty condition dicts). Character count is a
 cheap proxy for token count, not a substitute for it; the Anthropic SDK's token-counting endpoint
 can confirm actual token deltas later if a precise before/after number is wanted.
+
+## 12. Games/versions — `pokemon/games.py` (implemented)
+
+One new exception: `VersionNotFoundError` — raised by `get_version`, `get_version_group`, and
+`get_generation` (all in `service.py`) on a 404; the latter two use already-valid resource links
+from a successfully-resolved version, so they shouldn't 404 in practice, but raise the same
+exception defensively rather than assume. All three new `service.py` functions use the raw-JSON
+`_api_request` pattern (not the typed `pypokeclient` client methods), consistent with the
+Fairy-type lesson from §10.4 — safer by default now that one typed-model crash has already been
+found and fixed.
+
+```python
+def get_game_info(name_or_id: str) -> dict:
+```
+Resolves `version -> version_group -> generation -> sibling versions -> region(s)`:
+```json
+{"version": "omega-ruby", "version_group": "omega-ruby-alpha-sapphire",
+ "sibling_versions": ["alpha-sapphire"], "generation": "generation-vi", "regions": ["hoenn"]}
+```
+**A real correctness fix made during implementation, not in the original spec**: `regions` comes
+from `version_group.regions`, not `generation.main_region`. A remake like Omega Ruby is
+Generation VI (whose flagship region, per `main_region`, is Kalos) but is itself set in Hoenn —
+using `main_region` would have reported "kalos" for a Hoenn game. `version_group.regions` gives
+the actual region(s) for that specific game; confirmed live and is always a list (a version group
+can, in principle, span more than one region).
+
+**Known gap, stated plainly in the tool description**: this resolves which generation/region a
+game belongs to, not concrete cross-generation rule differences. `past_types`/`past_abilities`/
+`past_stats` (on `Pokemon`), `past_damage_relations` (on `Type`), `past_values` (on `Move`) are
+confirmed present in the live API but deliberately out of scope for this pass, per the user's own
+versioning-depth decision (§10 already established this pattern for `compare_pokemon`/
+`matchup.py`, which likewise don't apply version-group filtering or `past_*` overrides).
+
+`get_pokemon_locations`/`get_location_encounters` below call `get_game_info` internally to
+validate an optional `version` argument early — a clean `VersionNotFoundError` instead of a
+silently-empty result for an unknown game name.
+
+## 13. Locations — `pokemon/locations.py` (implemented)
+
+One new exception: `LocationNotFoundError` — raised by `get_location`/`get_location_area` on a
+404 (both in `service.py`, raw-JSON). `get_pokemon_location_area` (also in `service.py`, hits
+`pokemon/{id}/encounters`) raises the existing `PokemonNotFoundError` instead, since a 404 there
+means the Pokémon identifier was bad, not a location one.
+
+**Aggregation — the part that had to be verified, not assumed.** Confirmed live (Poochyena in
+Petalburg Woods, Emerald: two `encounter_details` slots of `chance` 20 and 10 for the same
+method, summing to exactly the API's own `max_chance: 30`) that summing `chance` within one
+`(version, method)` is correct. `_totals_by_group` groups strictly by
+`(method, frozenset(condition_values))` — not just `method` — because condition values like
+`time-night` (confirmed live via Hoothoot) are mutually exclusive alternatives, not concurrent
+probabilities; summing across them, not just across methods, would overstate the real chance.
+`_aggregate` then sums within each version and, when no `version` filter is given, averages that
+per-version total across every version where the group appears — live-verified on Zubat (many
+level-range slots, single method) and Hoothoot (time-of-day condition) that no resulting group
+ever exceeds 100%.
+
+```python
+def get_pokemon_locations(name_or_id: str, version: str | None = None) -> dict:
+def get_location_encounters(name_or_id: str, version: str | None = None) -> dict:
+```
+Forward (`get_pokemon_locations`) groups by location-area → method → condition-combo; reverse
+(`get_location_encounters`) fans out over every area of a `Location` and groups by area → pokemon
+→ method → condition-combo — both read the identical underlying `VersionEncounterDetail`/
+`Encounter` shape, just entered from opposite directions, confirmed live. Both have a precomputed
+single-best shortcut (`most_likely_location` / `most_common_pokemon`) that excludes one-off
+methods (`ONE_OFF_METHODS` — `gift`, `gift-egg`, `static`, `npc-trade`, and several event-only
+methods, confirmed against the live `encounter-method` list), so a 100%-chance static/gift
+encounter never crowds out genuinely repeatable wild encounters in that one ranked pick.
+
+**A real bug found and fixed during implementation, not in the original spec**: the first draft's
+single "no encounters" note fired whenever the shortcut couldn't be computed — including when a
+Pokémon has exactly one real encounter, just a one-off one. Confirmed live: `get_pokemon_locations
+("mew")` returns a real `locations` entry (a static encounter on Faraway Island, Emerald) while
+also claiming "no recorded wild encounter locations," which is self-contradictory. Fixed with two
+distinct notes: `NO_POKEMON_ENCOUNTERS_NOTE`/`NO_LOCATION_ENCOUNTERS_NOTE` only fire when the
+breakdown is truly empty; `ONLY_ONE_OFF_ENCOUNTERS_NOTE` fires when real entries exist but none
+are rankable, explicitly pointing at the full breakdown instead of a "most likely" pick that
+wouldn't be meaningful there.
+
+Tool descriptions state plainly: `chance_percent` without a `version` filter is a cross-game
+average, not one exact game's number; `conditions` are listed, never merged.
+
+## 14. Items — `pokemon/items.py` (implemented)
+
+One new exception: `ItemNotFoundError`, raised by `get_item` (`service.py`, raw-JSON).
+
+```python
+def get_item(name_or_id: str, pokemon_name_or_id: str | None = None) -> dict:
+```
+Structured: `category`, `attributes`, `fling` (`{power, effect}`, included only when
+`fling_power is not None`, same conditional-inclusion convention as `get_move`'s `meta`),
+`held_by_pokemon` (`[{pokemon, rarity_by_version: [{version, rarity_percent}]}]`), `prices`
+(`[{version_group, purchase_price, sell_price}]`), `machines` (`[version_group names]` only — not
+resolving the taught move, which would need an unexplored extra call). Free text: `effect` (first
+English `effect_entries` match, same convention as `get_move`).
+
+**Confirmed live, worth stating plainly in the tool description rather than assuming**: `prices`
+is frequently an empty list even for clearly purchasable items (`potion`, `hyper-potion`,
+`repel`, `revive` on the real public PokeAPI all return `prices: []`) — PokeAPI's price data
+coverage is genuinely incomplete, well-populated for some categories (confirmed non-empty for
+`great-ball`) but not most consumables. An empty list means "not recorded," not "free" or
+"unobtainable" — the tool description says so explicitly so the model doesn't over-interpret
+silence as a negative fact.
+
+If `pokemon_name_or_id` is given, fetches it via the existing `pokemon_service.get_pokemon`
+(reuses `PokemonNotFoundError`) and includes `{id, name, types}` under `"pokemon"`. Per the user's
+explicit choice (§ user decisions, recorded in the implementation plan): no hardcoded
+item→type-boost table, no evolution-chain cross-reference — the tool description tells the model
+plainly that this is the one deliberate exception to this project's "tool pre-computes, model
+never reasons" philosophy: when `pokemon` is present, the model judges the held-item/type synergy
+itself by reading `effect` against `pokemon.types`.

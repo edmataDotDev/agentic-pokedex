@@ -6,7 +6,16 @@ from anthropic.types import ToolParam
 from pokedex.pokemon import service as pokemon_service
 from pokedex.pokemon.battle import battle_win_probability
 from pokedex.pokemon.comparison import compare_pokemon
-from pokedex.pokemon.exceptions import InvalidBattleInputError, InvalidComparisonInputError
+from pokedex.pokemon.exceptions import (
+    InvalidBattleInputError,
+    InvalidComparisonInputError,
+    ItemNotFoundError,
+    LocationNotFoundError,
+    VersionNotFoundError
+)
+from pokedex.pokemon.games import get_game_info
+from pokedex.pokemon.items import get_item
+from pokedex.pokemon.locations import get_location_encounters, get_pokemon_locations
 from pokedex.pokemon.service import (
     EvolutionTriggerNotFoundError,
     MoveNotFoundError,
@@ -225,6 +234,108 @@ TOOLS: list[ToolParam] = [
             },
             "required": ["team_1", "team_2"],
             "additionalProperties": False
+        }
+    },
+    {
+        "name": "get_game_info",
+        "description": (
+            "Resolves a game (e.g. 'omega-ruby', 'emerald', 'scarlet') to its version group, "
+            "sibling version (the paired game, if any, e.g. 'alpha-sapphire' for 'omega-ruby'), "
+            "generation, and region(s) — use this to identify which generation a named game "
+            "belongs to, or to get the exact `version` string to pass to get_pokemon_locations / "
+            "get_location_encounters. Known gap, stated plainly: this does not yet compute "
+            "concrete cross-generation rule differences (e.g. the Fairy type not existing before "
+            "Generation VI, or ability/stat changes across generations) — only which generation/"
+            "region a game belongs to."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name_or_id": {
+                    "type": "string"
+                }
+            },
+            "required": ["name_or_id"],
+            "additionalProperties": False
+        }
+    },
+    {
+        "name": "get_pokemon_locations",
+        "description": (
+            "Retrieves where a Pokémon can be found in the wild by name or National Pokédex "
+            "number, with a pre-computed encounter-rate %, ranked by frequency. `version` is "
+            "optional: pass an exact game (e.g. 'emerald', from get_game_info) for that game's "
+            "exact numbers, or omit it to average across every game it's known in (an "
+            "approximate frequency signal, not one exact game's number). `most_likely_location` "
+            "is the single best repeatable wild-encounter pick; `locations` is the full "
+            "breakdown, each with one entry per encounter method (walk/surf/fishing rod/etc, "
+            "since different methods are separate, non-comparable encounter tables) giving "
+            "`chance_percent`, level range, which games it applies in, and any `conditions` "
+            "(e.g. time of day, swarm) — conditions are listed separately, never merged, because "
+            "they are mutually exclusive alternatives, not combined probabilities. If this "
+            "Pokémon has no repeatable wild encounters at all (only a one-off static/gift "
+            "encounter, or none recorded — common for starters, trade-only, or evolution-only "
+            "species), `most_likely_location` is omitted and a `note` explains why."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name_or_id": {"type": "string"},
+                "version": {"type": "string"}
+            },
+            "required": ["name_or_id"],
+            "additionalProperties": False
+        }
+    },
+    {
+        "name": "get_location_encounters",
+        "description": (
+            "Reverse of get_pokemon_locations: given a location by name (e.g. 'petalburg-woods'), "
+            "lists which wild Pokémon appear there and at what pre-computed encounter-rate %, "
+            "across every area within that location. Same `version`/`chance_percent`/`conditions` "
+            "semantics as get_pokemon_locations — optional `version` for one exact game's "
+            "numbers, omit to average across every game; `most_common_pokemon` is the single best "
+            "repeatable wild-encounter pick for this location, `areas` is the full breakdown per "
+            "area and Pokémon. If nothing repeatable is recorded, `most_common_pokemon` is "
+            "omitted and a `note` explains why."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name_or_id": {"type": "string"},
+                "version": {"type": "string"}
+            },
+            "required": ["name_or_id"],
+            "additionalProperties": False
+        }
+    },
+    {
+        "name": "get_item",
+        "description": (
+            "Retrieves a Pokémon item's specs by name or id: category, attributes (e.g. "
+            "holdable, consumable), fling power/effect, free-text `effect` explaining what it "
+            "does, `held_by_pokemon` (which wild Pokémon carry it naturally, with rarity % per "
+            "game — a structured 'how to find it via wild encounters' signal), `prices` (shop "
+            "buy/sell price per game — often an empty list, since PokeAPI's price data is only "
+            "well-populated for some item categories like Poké Balls, not most consumables; an "
+            "empty list means 'not recorded', not 'free' or 'unobtainable'), and `machines` "
+            "(which games teach a move via this item as a TM/TR, without resolving which move). "
+            "PokeAPI has no shop/route-location data at all — 'how to find it' can only be "
+            "answered from `held_by_pokemon` and `prices`, never a specific route or town name. "
+            "Optionally pass `pokemon_name_or_id` to also get that Pokémon's `types` alongside — "
+            "PokeAPI has no structured item-to-type-boost or item-to-evolution-species link, so "
+            "when `pokemon` is included, judge the held-item/type synergy yourself by reading "
+            "`effect` against `pokemon.types`: the one tool in this Pokédex where you do that "
+            "reasoning instead of the tool doing it for you."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name_or_id": {"type": "string"},
+                "pokemon_name_or_id": {"type": "string"}
+            },
+            "required": ["name_or_id"],
+            "additionalProperties": False
         },
         "cache_control": {"type": "ephemeral"}
     },
@@ -239,7 +350,11 @@ _HANDLERS: dict[str, Callable[..., dict]] = {
     "get_type": pokemon_service.get_type,
     "get_pokemon_form": pokemon_service.get_pokemon_form,
     "compare_pokemon": compare_pokemon,
-    "battle_win_probability": battle_win_probability
+    "battle_win_probability": battle_win_probability,
+    "get_game_info": get_game_info,
+    "get_pokemon_locations": get_pokemon_locations,
+    "get_location_encounters": get_location_encounters,
+    "get_item": get_item
 }
 
 
@@ -257,7 +372,10 @@ def execute_tool(name: str, tool_input: dict) -> tuple[str, bool]:
         TypeNotFoundError,
         PokemonFormNotFoundError,
         InvalidComparisonInputError,
-        InvalidBattleInputError
+        InvalidBattleInputError,
+        VersionNotFoundError,
+        LocationNotFoundError,
+        ItemNotFoundError
     ) as exc:
         return str(exc), True
 

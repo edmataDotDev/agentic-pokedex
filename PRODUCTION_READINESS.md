@@ -198,3 +198,40 @@ schemas, and the shared `pokemon/matchup.py` type-effectiveness helper): see **A
   silently breaking `compare_pokemon`/`matchup.py` for any Fairy-type Pokémon. Fixed by switching
   to the same raw-JSON `_api_request` pattern `get_move`/`get_pokemon_form` already use. See
   ARCHITECTURE.md §10.4.
+- [x] A second move-scoring bug surfaced only once a battle involved a guaranteed-hit move (e.g.
+  Swift, Aerial Ace): `move["accuracy"]` can be `null` in the real API (meaning "never misses"),
+  but the code divided it by 100 unconditionally — crashed the whole CLI the first time a real
+  battle used one. Fixed by treating `None` accuracy as 100 everywhere it's read.
+
+## 15. Games, Locations, Items — all implemented
+
+Spec: ARCHITECTURE.md §12 (games), §13 (locations), §14 (items).
+
+- [x] **Games/versions** (`pokemon/games.py`) — `get_game_info` resolves a game name to its
+  version group, sibling version, generation, and region(s). Known gap, stated in the tool
+  description: does not yet surface cross-generation rule differences (`past_types`/
+  `past_abilities`/`past_stats`/`past_damage_relations`/`past_values`), per the user's explicit
+  decision not to retrofit existing tools with version-group filtering in this pass.
+- [x] **Locations** (`pokemon/locations.py`) — `get_pokemon_locations` (forward) and
+  `get_location_encounters` (reverse), both with an optional `version` (aggregates/averages
+  across every game when omitted, per the user's explicit choice). Aggregation groups by
+  `(method, condition-combo)`, live-verified on Zubat and Hoothoot to never exceed 100% in any
+  group, and never collapses mutually-exclusive conditions (time-of-day, swarm) into one number.
+- [x] **Items** (`pokemon/items.py`) — `get_item`, optionally joined with a Pokémon's types. Per
+  the user's explicit choice, no hardcoded item→type-boost table: the model reads `effect`
+  against `pokemon.types` itself when both are present — the one deliberate exception to this
+  project's "tool pre-computes" philosophy. `prices` confirmed frequently empty even for
+  purchasable items (PokeAPI data gap, not a bug) — tool description says so explicitly.
+- [x] All four new `service.py` functions (`get_version`/`get_version_group`/`get_generation`,
+  `get_location`/`get_location_area`/`get_pokemon_location_area`, `get_item`) use the raw-JSON
+  `_api_request` pattern, not the typed `pypokeclient` client methods — a deliberate choice given
+  the Fairy-type bug already found in `get_type` (§10.4), to avoid hitting more typed-model
+  validation crashes on fields the real API can return as `null`.
+- [x] All four needed one new typed exception each (`VersionNotFoundError`,
+  `LocationNotFoundError`, `ItemNotFoundError`, reusing `PokemonNotFoundError` where a 404
+  genuinely means a bad Pokémon identifier rather than a bad location one) — all added to
+  `execute_tool`'s exception tuple alongside the `TOOLS`/`_HANDLERS` entries.
+- [x] A real logic bug surfaced and fixed during implementation: the first draft's "no
+  encounters" note fired even when a Pokémon had one real (but one-off, e.g. static/gift)
+  encounter recorded — self-contradictory alongside a non-empty result. Fixed with two distinct
+  notes (truly-empty vs. only-one-off-methods-recorded). See ARCHITECTURE.md §13.

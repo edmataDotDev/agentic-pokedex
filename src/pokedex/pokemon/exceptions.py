@@ -18,3 +18,12 @@ class InvalidComparisonInputError(Exception):
 
 class InvalidBattleInputError(Exception):
     """Raised when battle_win_probability receives a malformed team or format argument."""
+
+class VersionNotFoundError(Exception):
+    """Raised when a Version, Version Group, or Generation cannot be found by name or id."""
+
+class LocationNotFoundError(Exception):
+    """Raised when a Location or Location Area cannot be found by name or id."""
+
+class ItemNotFoundError(Exception):
+    """Raised when an Item cannot be found by name or id."""
