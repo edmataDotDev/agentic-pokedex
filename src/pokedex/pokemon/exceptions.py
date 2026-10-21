@@ -12,3 +12,6 @@ class TypeNotFoundError(Exception):
 
 class PokemonFormNotFoundError(Exception):
     """Raised when a Pokémon Form cannot be found by name or id number."""
+
+class InvalidComparisonInputError(Exception):
+    """Raised when compare_pokemon receives a malformed or out-of-range list of identifiers."""

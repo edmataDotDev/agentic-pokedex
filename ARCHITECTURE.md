@@ -194,16 +194,13 @@ consumer of that service, same relationship as `execute_tool` → `pokemon_servi
   (`is_error=True`) telling the model it can't retry that exact call again — *before*
   touching the real service, not after a crash. Not yet wired into `run_llm_turn`'s
   `"tool_use"` branch.
-- **`compare_pokemon`** (or similar second tool) — intentionally left for independent
-  design practice, following the same `TOOLS` + `_HANDLERS` + service-function pattern
-  as `get_pokemon`.
 - **Sequential, not concurrent, tool execution** — `run_llm_turn`'s `"tool_use"` branch runs
   a plain `for` loop over `tool_use_blocks`, calling `execute_tool` one at a time. The SDK
   docs recommend executing parallel tool calls concurrently (they still get returned together
   in one `tool_result` message, which `run_llm_turn` already does correctly — only the
   *execution* is sequential, not the response shape). Not a correctness bug, just slower than
-  necessary once a turn ever involves multiple tool calls at once (e.g. a future
-  `compare_pokemon` implemented as two parallel `get_pokemon` calls).
+  necessary once a turn ever involves multiple tool calls at once (e.g. `compare_pokemon`,
+  implemented, internally runs up to 6 sequential `get_pokemon` calls instead of concurrent ones).
 
 ## 8. Testing status
 
@@ -225,12 +222,14 @@ the reasoning. Still undecided: keep everything in this one file (Pokémon examp
 illustration), or extract a second, domain-free `AGENT_PATTERN.md` meant to be dropped into a new
 project as a starting point. Raised, not resolved, in conversation.
 
-## 10. Planned tools — battle win-probability & deterministic compare (spec)
+## 10. Planned tools — battle win-probability & deterministic compare
 
-Specs two new tools named informally in PRODUCTION_READINESS.md §14. Status: **designed, not
-implemented** — no `.py` files exist yet for either. Both follow the existing `TOOLS` +
-`_HANDLERS` + service-function pattern (§5); neither requires a new exception class or a change
-to `execute_tool`'s `except` tuple (verified below, per tool).
+Specs two tools named informally in PRODUCTION_READINESS.md §14. Both follow the existing
+`TOOLS` + `_HANDLERS` + service-function pattern (§5). Status: `compare_pokemon` is **implemented**
+(§10.2, generalized to N≥2 Pokémon rather than the originally-specced fixed pair — see below);
+`battle_win_probability` (§10.3) remains **designed, not implemented**. Only the battle tool's
+claim of "no new exception class or change to `execute_tool`'s `except` tuple" still holds —
+`compare_pokemon` needed one (`InvalidComparisonInputError`), explained in §10.2.
 
 ### 10.1 Shared helper: `pokemon/matchup.py` (new file)
 
@@ -255,57 +254,94 @@ def best_type_matchup(attacking_types: Sequence[str], defending_types: Sequence[
 - `best_type_matchup` is `max(type_effectiveness(t, defending_types) for t in attacking_types)`.
 - Raises only `TypeNotFoundError` (propagated from `get_type` — no new exception).
 
-### 10.2 `compare_pokemon` — deterministic compare tool
+### 10.2 `compare_pokemon` — deterministic compare tool (implemented, generalized to N≥2)
 
-New file `pokemon/comparison.py`. Purely arithmetic — no randomness, no simulation, which is the
-point of calling it "deterministic" (as opposed to the battle tool below).
+Implemented in `pokemon/comparison.py`. Purely arithmetic — no randomness, no simulation, which is
+the point of calling it "deterministic" (as opposed to the battle tool below). **Deviates from the
+original spec**, which was fixed at exactly two Pokémon: the real tool accepts a list of 2 to 6,
+so an arbitrary roster — not just a pair — can be compared in one call, and the result is a fully
+pre-computed structured summary (per-stat leaders, derived threat/weakness lists, directional type
+matchups for every pair) so the model never has to reason over the raw numbers itself.
 
 ```python
-def compare_pokemon(name_or_id_1: str, name_or_id_2: str) -> dict:
+def compare_pokemon(names_or_ids: Sequence[str]) -> dict:
 ```
 
-1. `pokemon_service.get_pokemon(name_or_id_1)` and `(name_or_id_2)` — reuse as-is, two calls.
-2. Per-stat diff for all six stats (`hp`, `attack`, `defense`, `special-attack`,
-   `special-defense`, `speed`): `{"stat": name, "pokemon_1": v1, "pokemon_2": v2, "diff": v1-v2}`.
-3. Base stat total (sum of the six) for each side, plus its diff.
-4. Type matchup, using `matchup.best_type_matchup`: best multiplier Pokémon 1's typing achieves
-   attacking Pokémon 2, and vice versa (two numbers, not one — matchups aren't symmetric).
+1. Validates input: must be a JSON array (guards against a bare string, which is itself
+   `len()`-able and would otherwise silently iterate character-by-character), with between
+   `MIN_POKEMON = 2` and `MAX_POKEMON = 6` entries. Unlike the battle tool's level clamp, an
+   out-of-range count is **rejected**, not silently truncated — dropping a Pokémon the user
+   explicitly named would be a worse failure mode than clamping one scalar.
+2. `pokemon_service.get_pokemon(n)` for each identifier, then de-duplicates by resolved `id`
+   (e.g. `"pikachu"` and `"25"` are the same Pokémon) — re-checks the 2-minimum after dedup, and
+   echoes a `note` field when anything was actually removed.
+3. Per-stat comparison for all six stats (`hp`, `attack`, `defense`, `special-attack`,
+   `special-defense`, `speed`): each Pokémon's value, its `diff_from_highest` (≤0), and a
+   `highest` list (handles N-way ties naturally).
+4. Base stat total (sum of the six) per Pokémon, same shape, plus a `base_stat_total_rank`
+   (ties share a rank) folded into each Pokémon's summary.
+5. Type matchup, using `matchup.best_type_matchup`, computed for every **ordered** pair among the
+   compared Pokémon (not just one pair — matchups aren't symmetric), plus two derived lists per
+   Pokémon (`super_effective_against`, `resisted_or_immune_vs`) so the model doesn't have to scan
+   the full ordered-pair list itself to answer "who threatens whom."
 
 Return shape:
 ```json
 {
-  "pokemon_1": {"id": .., "name": .., "types": [..]},
-  "pokemon_2": {"id": .., "name": .., "types": [..]},
-  "stat_comparison": [{"stat": "hp", "pokemon_1": 35, "pokemon_2": 44, "diff": -9}, ...],
-  "base_stat_total": {"pokemon_1": 320, "pokemon_2": 314, "diff": 6},
-  "type_matchup": {
-    "pokemon_1_best_multiplier_vs_pokemon_2": 2.0,
-    "pokemon_2_best_multiplier_vs_pokemon_1": 0.5
-  }
+  "pokemon": [
+    {"id": .., "name": .., "types": [..], "base_stat_total": .., "base_stat_total_rank": ..,
+     "stats_led": [..], "super_effective_against": [..], "resisted_or_immune_vs": [..]},
+    ...
+  ],
+  "stat_comparison": [
+    {"stat": "hp", "entries": [{"name": .., "value": .., "diff_from_highest": ..}, ...], "highest": [..]},
+    ...
+  ],
+  "base_stat_total_comparison": {
+    "entries": [{"name": .., "value": .., "diff_from_highest": ..}, ...], "highest": [..]
+  },
+  "type_matchups": [
+    {"attacker": .., "defender": .., "best_multiplier": ..}, ...
+  ]
 }
 ```
 
-**Exceptions:** only `PokemonNotFoundError` (from either `get_pokemon` call) and
-`TypeNotFoundError` (from `matchup`, via `get_type`) — both already in `execute_tool`'s `except`
-tuple. **No change needed to `agent/tools.py`'s exception handling.**
+**Exceptions:** `PokemonNotFoundError` (from `get_pokemon`), `TypeNotFoundError` (from `matchup`,
+via `get_type`) — both already in `execute_tool`'s `except` tuple — plus one new exception this
+tool actually needed: **`InvalidComparisonInputError`** (in `pokemon/exceptions.py`, same style as
+the other five), for the malformed/out-of-range-count cases above. A bare `ValueError` was
+considered and rejected: `pydantic.ValidationError` and `json.JSONDecodeError` (raised internally
+elsewhere in this codebase, e.g. `get_move`/`get_pokemon_form`'s `response.json()`) are themselves
+`ValueError` subclasses, so catching `ValueError` in `execute_tool` would silently swallow those
+too. `agent/tools.py`'s exception handling **does** need this one addition.
 
-**Tool schema** (new, first multi-parameter-pair schema in this codebase — same style as
-existing single-`name_or_id` schemas, just two of them):
+**Tool schema:**
 ```json
 {
   "name": "compare_pokemon",
-  "description": "Compares two Pokémon by name or National Pokédex number — per-stat differences, base stat totals, and the best type-effectiveness multiplier each side's typing achieves against the other's. Purely deterministic (no simulation): useful for \"which is stronger on paper\" questions.",
+  "description": "Compares 2 to 6 Pokémon by name or National Pokédex number, producing a fully pre-computed summary — pure stat and typing arithmetic, with no battle simulation (ignores level, moves, abilities, and IVs/EVs). Interpretation guide: `pokemon` lists each compared Pokémon's identity plus a derived summary — `base_stat_total_rank` (1 = highest total, ties share a rank), `stats_led` (base stats where this Pokémon is tied for highest among those compared), `super_effective_against` (other compared Pokémon this one's typing hits for 2x or more), and `resisted_or_immune_vs` (other compared Pokémon this one's typing only hits for 0.5x or less, including 0x immunity). `stat_comparison` has one entry per base stat (hp, attack, defense, special-attack, special-defense, speed): every compared Pokémon's `value`, `diff_from_highest` (always <= 0; 0 for whoever leads), and a `highest` list naming whoever is tied for that stat. `base_stat_total_comparison` is the same shape, summed across all six stats. `type_matchups` is directional/asymmetric: one entry per ordered (attacker, defender) pair among the compared Pokémon, with `best_multiplier` — the best type-effectiveness multiplier the attacker's typing achieves against the defender's typing (2.0 or 4.0 = advantage, 1.0 = neutral, 0.5 or 0.25 = resisted, 0.0 = immune). If a duplicate identifier was given (e.g. the same Pokémon by name and by number), it's silently de-duplicated and a `note` field explains it.",
   "input_schema": {
     "type": "object",
     "properties": {
-      "name_or_id_1": {"type": "string"},
-      "name_or_id_2": {"type": "string"}
+      "names_or_ids": {
+        "type": "array",
+        "items": {"type": "string"},
+        "minItems": 2,
+        "maxItems": 6
+      }
     },
-    "required": ["name_or_id_1", "name_or_id_2"],
+    "required": ["names_or_ids"],
     "additionalProperties": false
-  }
+  },
+  "cache_control": {"type": "ephemeral"}
 }
 ```
+
+**Known limitation, accepted for now (not a regression — the matchup helper below has never had
+caching):** at the max roster size (6), this is up to ~30–45 sequential, uncached `get_type` HTTP
+calls in the worst case (one ordered pair at a time, no memoization) — same category of accepted
+inefficiency as §10.4's note on the battle tool, and PRODUCTION_READINESS.md §10 already documents
+"no caching layer" as an open gap project-wide.
 
 ### 10.3 `battle_win_probability` — Monte Carlo battle tool
 

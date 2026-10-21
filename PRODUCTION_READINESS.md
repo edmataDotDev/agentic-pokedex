@@ -186,7 +186,9 @@ effectiveness helper both tools need): see **ARCHITECTURE.md §10**.
 - [ ] **Battle win-probability tool** (`pokemon/battle.py`, not created) — Monte Carlo
   simulation (~2000 battles) of two Pokémon at independent levels, using each side's best
   level-appropriate damaging move. Spec: ARCHITECTURE.md §10.3.
-- [ ] **Deterministic compare tool** (`pokemon/comparison.py`, not created) — per-stat diff +
-  totals between two Pokémon, plus bidirectional type effectiveness. Spec: ARCHITECTURE.md §10.2.
-- [ ] Both would need `TOOLS`/`_HANDLERS` entries in `agent/tools.py` once built — per the spec,
-  neither requires a change to `execute_tool`'s exception tuple.
+- [x] **Deterministic compare tool** (`pokemon/comparison.py`) — per-stat diff + totals between
+  2–6 Pokémon (generalized beyond the original two-Pokémon spec), plus directional type
+  effectiveness for every pair. Spec: ARCHITECTURE.md §10.2.
+- [ ] The battle tool would need a `TOOLS`/`_HANDLERS` entry in `agent/tools.py` once built; per
+  its spec it needs no change to `execute_tool`'s exception tuple. `compare_pokemon` already has
+  its entry and **did** need one addition to that tuple (`InvalidComparisonInputError`).

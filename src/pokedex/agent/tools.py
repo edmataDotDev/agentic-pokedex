@@ -1,8 +1,11 @@
 import json
+from collections.abc import Callable
 
 from anthropic.types import ToolParam
 
 from pokedex.pokemon import service as pokemon_service
+from pokedex.pokemon.comparison import compare_pokemon
+from pokedex.pokemon.exceptions import InvalidComparisonInputError
 from pokedex.pokemon.service import (
     EvolutionTriggerNotFoundError,
     MoveNotFoundError,
@@ -130,19 +133,56 @@ TOOLS: list[ToolParam] = [
             },
             "required": ["name_or_id"],
             "additionalProperties": False
+        }
+    },
+    {
+        "name": "compare_pokemon",
+        "description": (
+            "Compares 2 to 6 Pokémon by name or National Pokédex number, producing a fully "
+            "pre-computed summary — pure stat and typing arithmetic, with no battle simulation "
+            "(ignores level, moves, abilities, and IVs/EVs). Interpretation guide: `pokemon` lists "
+            "each compared Pokémon's identity plus a derived summary — `base_stat_total_rank` "
+            "(1 = highest total, ties share a rank), `stats_led` (base stats where this Pokémon is "
+            "tied for highest among those compared), `super_effective_against` (other compared "
+            "Pokémon this one's typing hits for 2x or more), and `resisted_or_immune_vs` (other "
+            "compared Pokémon this one's typing only hits for 0.5x or less, including 0x immunity). "
+            "`stat_comparison` has one entry per base stat (hp, attack, defense, special-attack, "
+            "special-defense, speed): every compared Pokémon's `value`, `diff_from_highest` (always "
+            "<= 0; 0 for whoever leads), and a `highest` list naming whoever is tied for that stat. "
+            "`base_stat_total_comparison` is the same shape, summed across all six stats. "
+            "`type_matchups` is directional/asymmetric: one entry per ordered (attacker, defender) "
+            "pair among the compared Pokémon, with `best_multiplier` — the best type-effectiveness "
+            "multiplier the attacker's typing achieves against the defender's typing (2.0 or 4.0 = "
+            "advantage, 1.0 = neutral, 0.5 or 0.25 = resisted, 0.0 = immune). If a duplicate "
+            "identifier was given (e.g. the same Pokémon by name and by number), it's silently "
+            "de-duplicated and a `note` field explains it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "names_or_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 2,
+                    "maxItems": 6
+                }
+            },
+            "required": ["names_or_ids"],
+            "additionalProperties": False
         },
         "cache_control": {"type": "ephemeral"}
     },
 ]
 
-_HANDLERS = {
+_HANDLERS: dict[str, Callable[..., dict]] = {
     "get_pokemon": pokemon_service.get_pokemon,
     "get_move": pokemon_service.get_move,
     "get_level_up_moves": pokemon_service.get_level_up_moves,
     "get_evolution_chain": pokemon_service.get_evolution_chain,
     "get_evolution_trigger": pokemon_service.get_evolution_trigger,
     "get_type": pokemon_service.get_type,
-    "get_pokemon_form": pokemon_service.get_pokemon_form
+    "get_pokemon_form": pokemon_service.get_pokemon_form,
+    "compare_pokemon": compare_pokemon
 }
 
 
@@ -158,7 +198,8 @@ def execute_tool(name: str, tool_input: dict) -> tuple[str, bool]:
         MoveNotFoundError,
         EvolutionTriggerNotFoundError,
         TypeNotFoundError,
-        PokemonFormNotFoundError
+        PokemonFormNotFoundError,
+        InvalidComparisonInputError
     ) as exc:
         return str(exc), True
 
