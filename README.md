@@ -2,7 +2,10 @@
 
 A CLI AI agent that answers Pokémon questions by calling [PokeAPI](https://pokeapi.co/) through
 [`pypokeclient`](https://pypi.org/project/pypokeclient/). Ask it about a Pokémon, its moves, its
-evolution chain, or its type, and it looks the data up live instead of guessing from memory.
+evolution chain, or its type, and it looks the data up live instead of guessing from memory. It
+can also compare Pokémon side by side, estimate battle (even team/doubles battle) outcomes, find
+where a Pokémon is caught in the wild (or what's found at a given location), and explain items —
+all computed by the tools themselves, not guessed by the model.
 
 This is a **learning project in agent engineering fundamentals**: the agentic loop is hand-built
 directly on the [Anthropic Python SDK](https://github.com/anthropics/anthropic-sdk-python) (no
@@ -22,6 +25,18 @@ The agent has tools to query:
 - **Evolution chains** — full evolution line for a species (`get_evolution_chain`)
 - **Evolution triggers** — what causes a given evolution (`get_evolution_trigger`)
 - **Types** — type matchups and the Pokémon/moves of a given type (`get_type`)
+- **Comparisons** — stat-by-stat and type-matchup comparison across 2–6 Pokémon at once, fully
+  pre-computed so the model just reads the conclusions (`compare_pokemon`)
+- **Battle simulation** — Monte Carlo win-probability between two teams (1–6 Pokémon each),
+  singles or real doubles, re-scoring moves live every turn (`battle_win_probability`)
+- **Games** — resolves a game to its generation, region, and sibling version, e.g. identifying
+  that Omega Ruby is a Generation VI remake set in Hoenn (`get_game_info`)
+- **Locations** — where a Pokémon is found in the wild and at what encounter rate, and the
+  reverse (which Pokémon appear at a given location), both aggregating across games or filtered
+  to one (`get_pokemon_locations`, `get_location_encounters`)
+- **Items** — an item's specs (category, fling, held-by-wild-Pokémon rarity, shop prices) and,
+  optionally, a Pokémon's types alongside it so the model can judge held-item fit
+  (`get_item`)
 
 ## Requirements
 
