@@ -16,3 +16,6 @@ wheels/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+
+# Bulbapedia lore (CC BY-NC-SA 2.5, not covered by the project license)
+legendary-lore/
