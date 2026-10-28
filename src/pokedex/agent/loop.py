@@ -1,29 +1,20 @@
 from concurrent.futures import ThreadPoolExecutor
 
 import anthropic
-from pokedex.config import get_settings
+from anthropic.types import TextBlockParam, ToolResultBlockParam
+
+from pokedex.agent.message_history import ContentBlock, Message, MessageHistory
 from pokedex.agent.system_prompt import SYSTEM_PROMPT
-from pokedex.agent.message_history import (
-    ContentBlock,
-    MessageHistory,
-    Message
-)
-from pokedex.agent.tools import (
-    execute_tool,
-    TOOLS
-)
-from pokedex.rag.service import preload_index
-from anthropic.types import (
-    TextBlockParam,
-    ToolResultBlockParam
-)
+from pokedex.agent.tools import TOOLS, execute_tool
 from pokedex.cli.service import (
-    get_user_input,
+    clear_screen,
     display_message,
     display_tool_calls,
     display_usage,
-    clear_screen
+    get_user_input,
 )
+from pokedex.config import get_settings
+from pokedex.rag.service import preload_index
 
 settings = get_settings()
 client = anthropic.Anthropic(

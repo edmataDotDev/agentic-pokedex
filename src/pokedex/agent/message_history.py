@@ -1,13 +1,13 @@
 from collections.abc import Sequence
 from typing import Literal, cast
 
+from anthropic.types import ContentBlock as ResponseContentBlock
 from anthropic.types import (
     MessageParam,
     TextBlockParam,
     ToolResultBlockParam,
     ToolUseBlockParam,
 )
-from anthropic.types import ContentBlock as ResponseContentBlock
 
 Role = Literal["user", "assistant", "system"]
 ContentBlock = TextBlockParam | ToolUseBlockParam | ToolResultBlockParam | ResponseContentBlock

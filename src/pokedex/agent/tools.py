@@ -11,7 +11,7 @@ from pokedex.pokemon.exceptions import (
     InvalidComparisonInputError,
     ItemNotFoundError,
     LocationNotFoundError,
-    VersionNotFoundError
+    VersionNotFoundError,
 )
 from pokedex.pokemon.games import get_game_info
 from pokedex.pokemon.items import get_item
@@ -21,7 +21,7 @@ from pokedex.pokemon.service import (
     MoveNotFoundError,
     PokemonFormNotFoundError,
     PokemonNotFoundError,
-    TypeNotFoundError
+    TypeNotFoundError,
 )
 from pokedex.rag.exceptions import InvalidIndexError
 from pokedex.rag.service import search_lore

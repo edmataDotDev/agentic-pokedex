@@ -30,3 +30,7 @@ dev = [
 
 [tool.mypy]
 plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = "pypokeclient.*"
+ignore_missing_imports = true

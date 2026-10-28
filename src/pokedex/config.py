@@ -3,6 +3,7 @@ from pathlib import Path
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
 class Settings(BaseSettings):
     anthropic_api_key: SecretStr
     model: str = "claude-sonnet-5"
