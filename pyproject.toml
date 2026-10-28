@@ -9,6 +9,7 @@ dependencies = [
     "pydantic-settings>=2.16.0",
     "pypokeclient>=2.3.0",
     "rich>=15.0.0",
+    "sentence-transformers>=6.2.0",
     "typer>=0.27.3",
 ]
 

@@ -8,6 +8,12 @@ FRONT_MATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
 
 PARAGRAPH_RE = re.compile(r"\n\s*\n")
 
+SENTENCE_RE = re.compile(r'(?<=[.!?])\s+(?=[A-Z"(])')
+
+MAX_CHUNK_CHARS = 1500
+
+ABBREVIATIONS = ("Mr.", "Mt.", "St.")
+
 
 @dataclass(frozen=True)
 class Chunk:
@@ -27,6 +33,38 @@ def _parse_front_matter(raw: str) -> tuple[dict[str, str], str]:
         key, _, value = line.partition(": ")
         meta[key.strip()] = value.strip()
     return meta, raw[match.end():]
+
+
+def _split_units(paragraph: str) -> list[str]:
+    units: list[str] = []
+    for line in paragraph.splitlines():
+        for sentence in SENTENCE_RE.split(line.strip()):
+            if not sentence:
+                continue
+            if units and units[-1].endswith(ABBREVIATIONS):
+                units[-1] = f"{units[-1]} {sentence}"
+            else:
+                units.append(sentence)
+    return units
+
+
+def _split_to_budget(paragraph: str, budget: int) -> list[str]:
+    if len(paragraph) <= budget:
+        return [paragraph]
+
+    pieces: list[str] = []
+    current = ""
+    for unit in _split_units(paragraph):
+        candidate = f"{current} {unit}" if current else unit
+        if len(candidate) <= budget:
+            current = candidate
+        else:
+            if current:
+                pieces.append(current)
+            current = unit
+    if current:
+        pieces.append(current)
+    return pieces
 
 
 def chunk_markdown(path: Path) -> list[Chunk]:
@@ -51,13 +89,14 @@ def chunk_markdown(path: Path) -> list[Chunk]:
         for paragraph in PARAGRAPH_RE.split(section_text):
             if not paragraph:
                 continue
-            chunks.append(
-                Chunk(
-                    pokemon=pokemon,
-                    generation=meta.get("generation", ""),
-                    source=meta.get("source", ""),
-                    section=section,
-                    text=f"{pokemon} — {section}\n\n{paragraph}",
+            for piece in _split_to_budget(paragraph, MAX_CHUNK_CHARS):
+                chunks.append(
+                    Chunk(
+                        pokemon=pokemon,
+                        generation=meta.get("generation", ""),
+                        source=meta.get("source", ""),
+                        section=section,
+                        text=f"{pokemon} — {section}\n\n{piece}",
+                    )
                 )
-            )
     return chunks
