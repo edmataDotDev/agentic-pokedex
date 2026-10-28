@@ -16,7 +16,7 @@ CHUNKS_FILE = "chunks.json"
 def _collect_chunks(documents_location: Path) -> list[Chunk]:
     return [
         chunk
-        for path in sorted(documents_location.rglob("*.md"))
+        for path in sorted(documents_location.glob("gen-*/*.md"))
         for chunk in chunk_markdown(path)
     ]
 
@@ -43,7 +43,9 @@ def main() -> None:
     settings = get_settings()
     chunks = _collect_chunks(settings.documents_location)
     if not chunks:
-        raise SystemExit(f"No chunks found under {settings.documents_location}")
+        raise SystemExit(
+            f"No chunks found: expected gen-<N>/<Pokemon>.md files under {settings.documents_location}"
+        )
 
     texts = [chunk.text for chunk in chunks]
     embeddings = embed_documents(texts)
