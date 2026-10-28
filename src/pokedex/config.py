@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     max_tokens: int
     max_concurrent_tools: int
     documents_location: Path = Path("legendary-lore")
+    index_location: Path = Path("data/index")
 
     model_config = SettingsConfigDict(
         env_file=".env",
