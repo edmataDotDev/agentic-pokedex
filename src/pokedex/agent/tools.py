@@ -23,6 +23,8 @@ from pokedex.pokemon.service import (
     PokemonNotFoundError,
     TypeNotFoundError
 )
+from pokedex.rag.exceptions import InvalidIndexError
+from pokedex.rag.service import search_lore
 
 TOOLS: list[ToolParam] = [
     {
@@ -336,6 +338,22 @@ TOOLS: list[ToolParam] = [
             },
             "required": ["name_or_id"],
             "additionalProperties": False
+        }
+    },
+    {
+        "name": "search_lore",
+        "description": (
+            "Searches the lore of legendary Pokémon only, from generation 1 through generation 9 "
+            "(biology, Pokédex entries, origin and name origin). Returns the most relevant "
+            "passages with their source; an empty result means no match. Write the query in English."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"}
+            },
+            "required": ["query"],
+            "additionalProperties": False
         },
         "cache_control": {"type": "ephemeral"}
     },
@@ -354,7 +372,8 @@ _HANDLERS: dict[str, Callable[..., dict]] = {
     "get_game_info": get_game_info,
     "get_pokemon_locations": get_pokemon_locations,
     "get_location_encounters": get_location_encounters,
-    "get_item": get_item
+    "get_item": get_item,
+    "search_lore": search_lore
 }
 
 
@@ -375,7 +394,8 @@ def execute_tool(name: str, tool_input: dict) -> tuple[str, bool]:
         InvalidBattleInputError,
         VersionNotFoundError,
         LocationNotFoundError,
-        ItemNotFoundError
+        ItemNotFoundError,
+        InvalidIndexError
     ) as exc:
         return str(exc), True
 

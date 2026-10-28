@@ -12,6 +12,7 @@ from pokedex.agent.tools import (
     execute_tool,
     TOOLS
 )
+from pokedex.rag.service import preload_index
 from anthropic.types import (
     TextBlockParam,
     ToolResultBlockParam
@@ -126,6 +127,7 @@ def run_llm_turn(history: MessageHistory) -> None | str:
             return text
 
 def agent_loop() -> MessageHistory:
+    preload_index()
     history = MessageHistory()
 
     isUserTurn = True
