@@ -18,3 +18,12 @@ def embed_documents(texts: Sequence[str]) -> np.ndarray:
 
 def embed_query(query: str) -> np.ndarray:
     return _get_model().encode_query(query, normalize_embeddings=True)
+
+
+def truncated_indices(texts: Sequence[str]) -> list[int]:
+    model = _get_model()
+    limit = model.max_seq_length
+    if limit is None:
+        return []
+    token_ids = model.tokenizer(list(texts))["input_ids"]
+    return [i for i, ids in enumerate(token_ids) if len(ids) > limit]
