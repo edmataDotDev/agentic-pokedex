@@ -864,7 +864,9 @@ check is `embedder.truncated_indices` (15.4), run by the indexer.
 ### 15.5 `indexer.py` — the offline command
 
 Registered as `pokedex-index = "pokedex.rag.indexer:main"` in `[project.scripts]` — a command that
-runs **before** the agent, never inside it. `main()`: `rglob("*.md")` (sorted, for reproducibility) →
+runs **before** the agent, never inside it. `main()`: `glob("gen-*/*.md")` (sorted, for
+reproducibility; deliberately not `rglob("*.md")`, which would also index the corpus repository's own
+`README.md` — 13 junk chunks, measured — when it is cloned straight into `documents_location`) →
 `chunk_markdown` → fail with a clear message if there are no chunks → `embed_documents` →
 `truncated_indices` → `_write_index` → print a summary, plus a `WARNING` listing any truncated chunk.
 
