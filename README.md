@@ -37,6 +37,8 @@ The agent has tools to query:
 - **Items** — an item's specs (category, fling, held-by-wild-Pokémon rarity, shop prices) and,
   optionally, a Pokémon's types alongside it so the model can judge held-item fit
   (`get_item`)
+- **Lore search** — semantic search over the lore of legendary Pokémon (generations 1–9), built
+  on a local embedding model; see [Lore search (RAG)](#lore-search-rag) (`search_lore`)
 
 ## Requirements
 
@@ -67,9 +69,68 @@ cp .env.example .env
 | `MAX_TOKENS` | Max tokens per model response. |
 | `MAX_TOOL_RETRY` | Max retries for a failing tool call. |
 | `MAX_CONCURRENT_TOOLS` | Max tool calls executed concurrently in one turn. |
+| `DOCUMENTS_LOCATION` | Optional. Folder containing the lore's `gen-<N>/` folders. Defaults to `legendary-lore`. |
+| `INDEX_LOCATION` | Optional. Folder where the lore search index is written and read. Defaults to `data/index`. |
 
 `.env` is never read into this repo's history — only `.env.example` (with placeholder values) is
 tracked in git.
+
+## Lore search (RAG)
+
+The agent can answer lore questions — biology, Pokédex entries, origin, and name origin — about
+**legendary Pokémon from generations 1 to 9** (`search_lore`). It is optional: without an index
+the tool simply returns no results and every other tool works as usual. Nothing is indexed while
+the agent runs; building the index is a separate, manual step.
+
+### Where the documents come from
+
+The corpus is one Markdown file per Pokémon (71 files, grouped by generation in `gen-1/` …
+`gen-9/`), taken from [Bulbapedia](https://bulbapedia.bulbagarden.net/) and published in its own
+repository: [edmataDotDev/legendary-lore](https://github.com/edmataDotDev/legendary-lore). Each
+file starts with front matter (`pokemon`, `generation`, a `source` link to the article, `license`,
+and the `retrieved` date), followed by `Biology`, `Pokédex entries`, and `Origin` sections.
+
+The documents are **not part of this repository** (`legendary-lore/` is gitignored): the text is
+licensed [CC BY-NC-SA 2.5](https://creativecommons.org/licenses/by-nc-sa/2.5/) — attribution
+required, non-commercial use only, derivatives under the same license — which is not this
+project's license. Pokémon and related names are trademarks of Nintendo, Creatures Inc. and GAME
+FREAK inc.; this project is unaffiliated.
+
+### Setting it up
+
+1. Put the documents in `legendary-lore/`:
+
+   ```bash
+   git clone --depth 1 https://github.com/edmataDotDev/legendary-lore.git legendary-lore
+   ```
+
+   The indexer only reads the `gen-<N>/<Pokemon>.md` files, so the repository's own `README.md`
+   is ignored. To keep the documents somewhere else, set `DOCUMENTS_LOCATION` in `.env` to a
+   folder that contains the `gen-<N>/` folders.
+
+2. Build the index. This is a separate command from the agent: run it once, and again whenever the
+   documents change.
+
+   ```bash
+   uv run pokedex-index
+   ```
+
+   The first run downloads the embedding model (`BAAI/bge-small-en-v1.5`, about 130 MB from
+   Hugging Face, cached afterwards) and embeds every document locally. It makes no Anthropic API
+   calls, though like every command in this project it needs a valid `.env` to start. On success it
+   prints something like `Indexed 816 chunks with BAAI/bge-small-en-v1.5 -> data/index` and writes
+   `embeddings.npy` and `chunks.json` to `data/index/` (gitignored). If any chunk is longer than the
+   model can read, it prints a warning listing it.
+
+3. Start the agent as usual with `uv run pokedex`. The index loads in the background at startup, so
+   the prompt appears right away. Ask about the lore of a legendary Pokémon; the agent writes its
+   search in English.
+
+4. After rebuilding the index, restart the agent — it loads the index once, at startup.
+
+If the index was built with a different embedding model than the one in the code, the tool returns
+an error telling you to rebuild it with `uv run pokedex-index`. For how it works internally, see
+[ARCHITECTURE.md](ARCHITECTURE.md) §15.
 
 ## Usage
 
