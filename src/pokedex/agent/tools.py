@@ -344,8 +344,9 @@ TOOLS: list[ToolParam] = [
         "name": "search_lore",
         "description": (
             "Searches the lore of legendary Pokémon only, from generation 1 through generation 9 "
-            "(biology, Pokédex entries, origin and name origin). Returns the most relevant "
-            "passages with their source; an empty result means no match. Write the query in English."
+            "(biology, Pokédex entries, origin and name origin). Always returns the closest "
+            "passages with their source, even when none really answers the question, so check "
+            "they do before using them. Write the query in English."
         ),
         "input_schema": {
             "type": "object",

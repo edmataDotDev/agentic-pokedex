@@ -6,7 +6,7 @@ fundamentals — every piece here was deliberately designed, not scaffolded auto
 
 ## 1. Layers and dependency direction
 
-**Filesystem layout** — `agent/`, `pokemon/`, and `cli/` are siblings, all directly under
+**Filesystem layout** — `agent/`, `pokemon/`, `rag/`, and `cli/` are siblings, all directly under
 `src/pokedex/`. None is nested inside another:
 
 ```
@@ -20,6 +20,12 @@ src/pokedex/
 │   └── tools.py             TOOLS schema + dispatch (execute_tool)
 ├── pokemon/
 │   └── service.py        PokeAPI via pypokeclient
+├── rag/                   legendary-lore retrieval (see §15)
+│   ├── chunking.py          Markdown → Chunk
+│   ├── embedder.py          text → vector (local model)
+│   ├── indexer.py           offline `pokedex-index` command
+│   ├── service.py           preload_index, search_lore
+│   └── exceptions.py        InvalidIndexError
 └── cli/
     └── service.py         terminal I/O
 ```
@@ -33,6 +39,8 @@ __init__.py (main)
                   ├─imports─> agent/message_history.py
                   ├─imports─> agent/system_prompt.py
                   ├─imports─> agent/tools.py ─imports─> pokemon/service.py
+                  │                          └─imports─> rag/service.py
+                  ├─imports─> rag/service.py   (preload_index, called at the start of agent_loop)
                   └─imports─> cli/service.py
 
 config.py (Settings) — imported by whichever module needs it; not part of this chain
@@ -71,6 +79,11 @@ concerns if any arise.
 Services are **not exclusive to tools** — `pokemon/service.py` happens to be wrapped by a
 tool (`get_pokemon` in `agent/tools.py`), but `cli/service.py` is consumed directly by `loop.py`,
 with no tool schema involved. "Service" means "environment adapter," not "tool backend."
+
+`rag/service.py` follows the same contract: it adapts a local, on-disk search index (and the local
+embedding model behind it), knows nothing about Claude or tool schemas, and raises a typed domain
+exception (`InvalidIndexError`). Like `cli/service.py`, `loop.py` also calls it directly
+(`preload_index()`), not only through its tool.
 
 ## 3. Configuration (`config.py`)
 
@@ -769,3 +782,159 @@ item→type-boost table, no evolution-chain cross-reference — the tool descrip
 plainly that this is the one deliberate exception to this project's "tool pre-computes, model
 never reasons" philosophy: when `pokemon` is present, the model judges the held-item/type synergy
 itself by reading `effect` against `pokemon.types`.
+
+## 15. RAG — legendary Pokémon lore (`rag/`) (implemented)
+
+Lets the agent answer lore questions (biology, Pokédex entries, origin, name origin) about
+**legendary Pokémon only, generations 1–9**, from Bulbapedia Markdown in `legendary-lore/`. That
+folder is git-ignored: the content is CC BY-NC-SA 2.5, not covered by the project license, and lives
+in its own repo. Everything is hand-built — `numpy` for the vectors, no vector database, no RAG
+framework — consistent with the rest of the project. **Indexing is a separate, manual, offline
+step**; the agent only reads the finished index and never indexes at run time.
+
+### 15.1 Two phases, one contract
+
+```
+OFFLINE   uv run pokedex-index
+  legendary-lore/**/*.md ─chunk_markdown─> [Chunk] ─embed_documents─> (N, 384) matrix
+        └──────────── data/index/embeddings.npy  +  data/index/chunks.json ────────────┘
+
+AGENT TIME   agent_loop() ─> preload_index()   (background thread, see 15.6)
+  user question ─(Claude writes the query in English)─> search_lore(query)
+        ─embed_query─> (384,) vector ─ matrix @ vector ─> N scores ─ top 5 ─> chunks.json rows
+```
+
+The contract between the phases: **row *i* of `embeddings.npy` is the embedding of `chunks[i]` in
+`chunks.json`**. `chunks.json` also records the `model` and `dimension` the index was built with, so
+the search can refuse an index that doesn't match the current model.
+
+### 15.2 Configuration
+
+- `documents_location` (`DOCUMENTS_LOCATION`, default `legendary-lore`) and `index_location`
+  (`INDEX_LOCATION`, default `data/index`) are `Settings` fields (`Path`). Unlike the other fields
+  they have **defaults**: an existing `.env` without them must not stop the agent from starting.
+  `data/` is git-ignored — the index is regenerable.
+- The embedding model name is a **module constant** (`embedder.MODEL_NAME`), not a setting, on the
+  same reasoning as `battle.py`'s constants: it is coupled to the index (vectors from different models
+  are not comparable), not deployment config.
+
+### 15.3 `chunking.py` — Markdown → `Chunk`
+
+`chunk_markdown(path) -> list[Chunk]`; `Chunk(pokemon, generation, source, section, text)`, frozen.
+
+1. `_parse_front_matter`: the `---` block (`FRONT_MATTER_RE`) → `key: value` dict (split on the first
+   `": "`, since `source` URLs contain colons); falls back to the file stem if `pokemon` is missing.
+2. Sections: `HEADING_RE` matches `##`/`###` lines (a single `#` is the Pokémon's name, already in the
+   front matter). A section's text runs from its heading to the next one, so there is no duplication
+   between a `##` and its `###` children. `section` is `"Biology"` or `"Origin > Name origin"`.
+3. Paragraphs: each section is split on blank lines (`PARAGRAPH_RE`); **one chunk per paragraph**.
+4. Size budget: a paragraph longer than `MAX_CHUNK_CHARS = 1500` is split by `_split_to_budget`:
+   `_split_units` cuts on lines first (a bullet of *Pokédex entries* stays whole), then on sentences
+   (`SENTENCE_RE`), gluing back a cut that follows `ABBREVIATIONS = ("Mr.", "Mt.", "St.")`; the units
+   are then greedily packed up to the budget. A single unit over budget is emitted alone.
+5. `Chunk.text` = `"{pokemon} — {section}\n\n{body}"`. The prefix is part of what gets embedded, so a
+   bare sentence like "It is said to live in another world" still names its Pokémon.
+
+Measured on the 71 files: **816 chunks**, longest body 1497 chars, longest chunk **379 tokens** against
+the model's 512-token window (0 truncated). The 1500-char budget is a model-agnostic proxy; the real
+check is `embedder.truncated_indices` (15.4), run by the indexer.
+
+### 15.4 `embedder.py` — text → vector
+
+- Model: `BAAI/bge-small-en-v1.5` (384 dimensions, 512-token window) via `sentence-transformers`.
+  English-only on purpose: the LLM writes the query in English (15.7), so a multilingual embedder
+  isn't needed. Chosen as a light baseline for future evals.
+- `embed_documents(texts) -> (N, 384)` and `embed_query(query) -> (384,)` call the library's
+  `encode_document` / `encode_query`, which apply the model's own configured prompts. For this model
+  those prompts are empty, so **no query prefix is applied** (an open experiment, 15.9). The two
+  functions are separate so swapping to a model with asymmetric prefixes only changes this file.
+- Both pass `normalize_embeddings=True` explicitly, so every vector has length 1 and
+  `matrix @ vector` *is* cosine similarity. The model happens to normalize already; the explicit flag
+  keeps the invariant independent of the model.
+- `truncated_indices(texts)` tokenizes with the model's own tokenizer and returns the positions
+  exceeding `max_seq_length` (silent truncation otherwise). `max_seq_length is None` → `[]`.
+- `_get_model()` is `lru_cache`d and **imports `sentence_transformers` inside the function**.
+  Importing torch took ~9 s and, because `tools.py` imports the RAG service, blocked every CLI startup
+  (measured: `import pokedex` 8.8 s vs ~0.7 s). Deferred, it runs in the preload thread. The
+  HF/transformers verbosity env vars and the torch-redirects logger are set (via `setdefault`, so a
+  user-set value wins) *before* that import, because the libraries read them at load time; this keeps
+  the weight-loading bar and hub warnings from printing over the chat prompt. Side effect: only
+  *errors* from those libraries are shown, in the agent and in the indexer.
+
+### 15.5 `indexer.py` — the offline command
+
+Registered as `pokedex-index = "pokedex.rag.indexer:main"` in `[project.scripts]` — a command that
+runs **before** the agent, never inside it. `main()`: `rglob("*.md")` (sorted, for reproducibility) →
+`chunk_markdown` → fail with a clear message if there are no chunks → `embed_documents` →
+`truncated_indices` → `_write_index` → print a summary, plus a `WARNING` listing any truncated chunk.
+
+`_write_index` writes `embeddings.npy` (via an open file handle: `np.save` on a path without a `.npy`
+suffix would append one) and `chunks.json` (`{"model", "dimension", "chunks": [asdict(chunk), …]}`,
+`ensure_ascii=False`) to `.tmp` files, then `os.replace`s both, so a crash mid-write cannot leave a
+new matrix beside old metadata. The window between the two renames is tiny but not zero.
+
+Verified: matrix `(816, 384)` float32; re-embedding random chunks reproduces their rows; no leftover
+`.tmp` files; re-running overwrites cleanly. ~4.5 s to embed everything on Apple `mps`.
+
+### 15.6 `service.py` — loading and searching
+
+- `preload_index()` — called as the first line of `agent_loop` — submits `_load_index` to a
+  single-worker `ThreadPoolExecutor` once (lock-guarded, idempotent) and returns the `Future`. The
+  agent prompt appears immediately; loading overlaps with the user typing.
+- `_load_index()` returns `None` if the index files don't exist (the agent still works; search
+  returns nothing). Otherwise it loads both files and raises `InvalidIndexError` when they are
+  unreadable (`OSError`/`ValueError`/`KeyError`), when `model` differs from `MODEL_NAME`, or when the
+  matrix shape isn't `(len(chunks), dimension)`. A same-dimension model mismatch would otherwise
+  return silent garbage, which is why it is an error and not an empty result. Finally it calls
+  `embed_query("warm up")` so the model is loaded in this thread and the first real search isn't slow.
+- `search_lore(query) -> dict` waits on the future (`.result()`; a failed load re-raises on every
+  call), returns `{"results": []}` for a missing index or a blank/non-string query, then
+  `scores = embeddings @ embed_query(query)` and the top `TOP_K = 5` via `np.argsort(scores)[::-1]`.
+- `embed_query` runs under `_query_lock`: the agent loop executes tools concurrently and thread-safety
+  of the model (notably on `mps`) was not verified, so queries are serialized — milliseconds each.
+  The matrix `@`/`argsort` are read-only and need no lock.
+- Each result: `pokemon`, `generation`, `section`, `source`, `score` (3 decimals), and `text` **with the
+  `"Pokémon — Section\n\n"` prefix removed** (`partition("\n\n")[2]`, which relies on that separator
+  from `chunking.py`) — the prefix is redundant with the other fields in what the model reads.
+  `source` (the Bulbapedia URL) is returned so answers can be attributed.
+
+### 15.7 The tool — `search_lore(query: str)`
+
+Standard pattern (§5): an entry in `TOOLS`, `"search_lore": search_lore` in `_HANDLERS`, and
+`InvalidIndexError` added to `execute_tool`'s `except`, so a bad index reaches the model as
+`(message, is_error=True)` telling it to rebuild with `pokedex-index`, instead of raising.
+The description is deliberately short: legendary Pokémon only, generations 1–9, what it covers,
+returns passages with their source, **write the query in English** — that sentence is what replaces
+a multilingual embedder. It also says the tool *always* returns the closest passages even when none
+really answers the question (there is no similarity threshold, 15.8), so the model is told to check
+relevance itself rather than read an empty result as "no match". `search_lore` is now the **last** entry in `TOOLS`, so it carries the
+`cache_control: ephemeral` breakpoint (moved from `get_item`; one breakpoint at the end of the list).
+
+### 15.8 Decisions
+
+- `TOP_K = 5`, fixed and not exposed in the schema (~2,000 chars, ~500 tokens per call).
+- **No similarity threshold.** bge-small's scores are compressed (clearly related ≈ 0.72, loosely
+  related ≈ 0.69), so any cutoff would be a guess; to be calibrated with evals.
+- An empty result is just `{"results": []}`, with no note distinguishing "no index" from "no match".
+- The index is loaded **once per process**, eagerly and concurrently, rather than per call.
+
+### 15.9 Known gaps
+
+- **Irrelevant results are still returned.** With no threshold, a non-blank query on a built index
+  *always* yields 5 results, however unrelated (e.g. "ghost pokemon that lives in a cave" returned
+  Zygarde/Regigigas/Necrozma); an empty result only means a missing index or a blank query. The tool
+  description says so and leaves the relevance judgment to the model; a threshold waits for evals.
+- **No evals and no automated tests** for the RAG. It was verified by calling `execute_tool` directly
+  (no Anthropic API): top results for sample queries, empty/non-string queries, 4 concurrent searches
+  matching sequential ones, and missing / wrong-model / corrupt / inconsistent indexes. A full agent
+  run confirming that Claude chooses `search_lore` for lore questions is not recorded here.
+- The index is not reloaded: regenerating it needs an agent restart, and an index absent at startup
+  stays absent for that process. A search issued in the first few seconds waits for the preload.
+- Every `pokedex` command imports the agent (`pokedex/__init__.py` → `loop.py`), so `pokedex-index`
+  also requires a valid `.env` (API key) even though it never calls the API.
+- Chunking limits: the abbreviation list is closed (`Dr.`, `Jr.` would mis-split); packed pieces lose
+  their original line breaks; very short chunks remain (shortest body 23 chars); a source artifact —
+  a blank line inside a sentence in some files — splits that sentence into two chunks.
+- Experiments queued for evals: the bge query-instruction prefix; chunk budget (e.g. 1500 vs ~1800
+  chars, or no splitting with a long-window model such as `gte-modernbert-base`, 8192 tokens);
+  *sentence-window* retrieval (embed ~3,800 sentences, return the parent paragraph).
