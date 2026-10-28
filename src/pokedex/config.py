@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -8,6 +10,7 @@ class Settings(BaseSettings):
     model_name: str
     max_tokens: int
     max_concurrent_tools: int
+    documents_location: Path = Path("legendary-lore")
 
     model_config = SettingsConfigDict(
         env_file=".env",
